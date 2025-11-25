@@ -3,6 +3,7 @@ import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import { OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { graphData } from "./graph-data";
+import { Terminal3D } from "./components/Terminal3D";
 
 // Grid system constants
 const GRID = {
@@ -247,16 +248,24 @@ interface SceneProps {
   onSelectedGroupChange: (group: string | null) => void;
   isPanelView: boolean;
   onPanelViewChange: (isPanelView: boolean) => void;
+  showTerminal: boolean;
 }
 
 // Camera controller that moves camera in front of target
-function CameraController({ target, panelWidth, hasFileSelected }: { target: { x: number; y: number; z: number } | null; panelWidth: number; hasFileSelected: boolean }) {
+function CameraController({ target, panelWidth, hasFileSelected, scrollBounds }: {
+  target: { x: number; y: number; z: number } | null;
+  panelWidth: number;
+  hasFileSelected: boolean;
+  scrollBounds: { minY: number; maxY: number } | null;
+}) {
   const { camera, size, gl } = useThree();
   const controlsRef = useRef<any>(null);
   const prevTargetRef = useRef<string | null>(null);
   const animationRef = useRef<number | null>(null);
   const hasFileSelectedRef = useRef(hasFileSelected);
+  const scrollBoundsRef = useRef(scrollBounds);
   hasFileSelectedRef.current = hasFileSelected;
+  scrollBoundsRef.current = scrollBounds;
 
   // Handle scroll for panning (shift+scroll or horizontal) and zoom (ctrl+scroll or pinch)
   useEffect(() => {
@@ -285,7 +294,20 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
       // When file is selected: only vertical scroll allowed
       // When no file selected: only horizontal scroll allowed
       const deltaX = hasFileSelectedRef.current ? 0 : e.deltaX * panSpeedX;
-      const deltaY = hasFileSelectedRef.current ? e.deltaY * panSpeedY : 0;
+      let deltaY = hasFileSelectedRef.current ? e.deltaY * panSpeedY : 0;
+
+      // Apply scroll bounds for vertical scrolling
+      if (deltaY !== 0 && scrollBoundsRef.current) {
+        const bounds = scrollBoundsRef.current;
+        const newTargetY = controlsRef.current.target.y - deltaY;
+
+        // Clamp to bounds
+        if (newTargetY > bounds.maxY) {
+          deltaY = controlsRef.current.target.y - bounds.maxY;
+        } else if (newTargetY < bounds.minY) {
+          deltaY = controlsRef.current.target.y - bounds.minY;
+        }
+      }
 
       camera.position.addScaledVector(right, deltaX);
       camera.position.addScaledVector(up, -deltaY);
@@ -392,7 +414,7 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal }: SceneProps) {
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
   const prevPositionRef = useRef<{ x: number; y: number; z: number } | null>(null);
@@ -451,6 +473,37 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
     }
   }, [isPanelView, cameraTarget, onCameraTargetChange, onPanelViewChange]);
 
+  // Compute scroll bounds for selected file
+  const scrollBounds = useMemo(() => {
+    if (!selectedGroup) return null;
+    const group = groupNodes.find(g => g.id === selectedGroup);
+    if (!group || !group.file) return null;
+
+    const code = fileContents.get(group.file);
+    if (!code) return null;
+
+    // Calculate panel height based on code lines (same logic as CodePanel3D)
+    const lines = code.split("\n");
+    const scale = 3;
+    const lineHeight = 18 * scale;
+    const padding = 20 * scale;
+    const headerHeight = 36 * scale;
+    const maxLineLength = Math.max(...lines.map(l => l.length), 40);
+    const fontSize = 14 * scale;
+    const canvasWidth = Math.min(2048 * scale, Math.max(600 * scale, (maxLineLength * fontSize * 0.6) + padding * 2 + 60 * scale));
+    const canvasHeight = headerHeight + padding * 2 + lines.length * lineHeight;
+
+    const baseWidth = 20;
+    const planeHeight = (canvasHeight / canvasWidth) * baseWidth;
+    const yOffset = -5 - planeHeight / 2;
+
+    // Bounds: top of panel to bottom of panel
+    const topY = yOffset + planeHeight / 2;
+    const bottomY = yOffset - planeHeight / 2;
+
+    return { minY: bottomY, maxY: topY };
+  }, [selectedGroup, groupNodes, fileContents]);
+
   return (
     <>
       <ambientLight intensity={0.5} />
@@ -483,7 +536,17 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         target={cameraTarget}
         panelWidth={20}
         hasFileSelected={selectedGroup !== null && groupNodes.some(g => g.id === selectedGroup && g.file !== null)}
+        scrollBounds={scrollBounds}
       />
+
+      {/* Terminal panel */}
+      {showTerminal && (
+        <Terminal3D
+          position={[-50, 0, 0]}
+          width={40}
+          height={25}
+        />
+      )}
     </>
   );
 }
@@ -764,6 +827,7 @@ export default function App() {
   const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [isPanelView, setIsPanelView] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(false);
 
   const handleNavigate = useCallback((path: string[]) => {
     setCurrentPath(path);
@@ -818,6 +882,13 @@ export default function App() {
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Toggle terminal with backtick
+      if (e.key === "`") {
+        e.preventDefault();
+        setShowTerminal(prev => !prev);
+        return;
+      }
+
       if (e.key === "Escape") {
         // Go back one level and reset selection
         if (currentPath.length > 0) {
@@ -826,6 +897,14 @@ export default function App() {
         setCameraTarget(null);
         setSelectedGroup(null);
         setSelectedIndex(0);
+      } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        // In panel view, scroll up/down
+        if (isPanelView && cameraTarget) {
+          e.preventDefault();
+          const scrollAmount = e.key === "ArrowUp" ? 3 : -3;
+          const newY = cameraTarget.y + scrollAmount;
+          setCameraTarget({ ...cameraTarget, y: newY });
+        }
       } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         const visibleNodes = getVisibleNamespacesWithPositions();
         if (visibleNodes.length === 0) return;
@@ -842,8 +921,15 @@ export default function App() {
         // Set camera target to the selected node's position and select the node
         const node = visibleNodes[newIndex];
         console.log('Arrow key navigation:', { newIndex, nodeId: node.id, position: node.position });
-        setCameraTarget(node.position);
         setSelectedGroup(node.id);
+
+        // If in panel view, go to the new node's panel, otherwise go to node position
+        if (isPanelView) {
+          const panelY = -5 - 10; // Approximate panel center
+          setCameraTarget({ x: node.position.x, y: panelY, z: node.position.z });
+        } else {
+          setCameraTarget(node.position);
+        }
       } else if (e.key === " " && selectedGroup) {
         e.preventDefault();
         // Check if selected namespace has children (not a file)
@@ -964,6 +1050,7 @@ export default function App() {
           onSelectedGroupChange={handleSelectedGroupChange}
           isPanelView={isPanelView}
           onPanelViewChange={handlePanelViewChange}
+          showTerminal={showTerminal}
         />
       </Canvas>
     </div>
