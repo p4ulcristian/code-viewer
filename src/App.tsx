@@ -1,5 +1,5 @@
 import { useRef, useMemo, useState, useCallback, useEffect } from "react";
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import { OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { graphData } from "./graph-data";
@@ -151,8 +151,11 @@ function GroupNode({ id, position, count, color, isSelected, onClick, file, code
   // Only show code panel if this namespace has a real file
   const hasFile = file && code;
 
+  // Bring selected node forward so it's not overlapped
+  const zOffset = isSelected ? 30 : 0;
+
   return (
-    <group position={[position.x, position.y, position.z]}>
+    <group position={[position.x, position.y, position.z + zOffset]}>
       <mesh ref={meshRef} onClick={onClick}>
         <sphereGeometry args={[size, 32, 32]} />
         <meshStandardMaterial
@@ -182,8 +185,8 @@ function GroupNode({ id, position, count, color, isSelected, onClick, file, code
         {hasFile ? file!.split("/").pop() : `${count} ns`}
       </Text>
 
-      {/* Show code panel below if this is a real file */}
-      {hasFile && (
+      {/* Show code panel below only for selected node */}
+      {hasFile && isSelected && (
         <CodePanel3D
           nsId={id}
           filePath={file!}
@@ -227,9 +230,50 @@ interface SceneProps {
   currentPath: string[];
   onNavigate: (path: string[]) => void;
   fileContents: Map<string, string>; // Pre-loaded file contents
+  yOffset: number;
+  onNodeClick: (position: { x: number; y: number; z: number }) => void;
 }
 
-function Scene({ currentPath, onNavigate, fileContents }: SceneProps) {
+// Camera controller that moves camera in front of target, fitting panel to viewport
+function CameraController({ target, panelWidth }: { target: { x: number; y: number; z: number } | null; panelWidth: number }) {
+  const { camera, size } = useThree();
+  const controlsRef = useRef<any>(null);
+  const targetPos = useRef(new THREE.Vector3(0, 0, 0));
+  const cameraPos = useRef(new THREE.Vector3(0, 60, 80));
+
+  useEffect(() => {
+    if (target) {
+      // Set target exactly on the node
+      targetPos.current.set(target.x, target.y, target.z);
+
+      // Calculate distance needed to fit panel width in viewport
+      // Using horizontal FOV: hFov = 2 * atan(tan(vFov/2) * aspect)
+      const vFov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+      const aspect = size.width / size.height;
+      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+
+      // Distance = (panelWidth / 2) / tan(hFov / 2)
+      // Add some padding (0.9 to leave 10% margin on each side)
+      const distance = (panelWidth / 2) / Math.tan(hFov / 2) / 0.85;
+
+      // Position camera directly in front
+      cameraPos.current.set(target.x, target.y, target.z + distance);
+    }
+  }, [target, panelWidth, camera, size]);
+
+  useFrame(() => {
+    if (controlsRef.current) {
+      // Smoothly interpolate camera position and target
+      camera.position.lerp(cameraPos.current, 0.05);
+      controlsRef.current.target.lerp(targetPos.current, 0.05);
+      controlsRef.current.update();
+    }
+  });
+
+  return <OrbitControls ref={controlsRef} makeDefault enablePan={false} enableZoom={false} />;
+}
+
+function Scene({ currentPath, onNavigate, fileContents, yOffset, onNodeClick }: SceneProps) {
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
 
@@ -247,27 +291,33 @@ function Scene({ currentPath, onNavigate, fileContents }: SceneProps) {
 
   const nodePositions = useMemo(() => {
     const map = new Map<string, { x: number; y: number; z: number }>();
-    groupNodes.forEach((g) => map.set(g.id, g.position));
+    groupNodes.forEach((g) => map.set(g.id, { ...g.position, y: g.position.y + yOffset }));
     return map;
-  }, [groupNodes]);
+  }, [groupNodes, yOffset]);
 
   const edges = useMemo(() => {
     return getEdgesBetweenGroups(groupNodes.map((g) => g.id));
   }, [groupNodes]);
 
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
+  const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
 
-  const handleClick = useCallback((groupId: string) => {
+  const handleClick = useCallback((groupId: string, position: { x: number; y: number; z: number }) => {
     const childGroups = getChildNamespaces(groupId, depth + 1);
     const hasChildren = childGroups.size > 1 ||
       (childGroups.size === 1 && !childGroups.has(groupId));
+
+    // Set camera target to clicked node
+    const targetPos = { x: position.x, y: position.y + yOffset, z: position.z };
+    setCameraTarget(targetPos);
+    onNodeClick(targetPos);
 
     if (hasChildren) {
       onNavigate([...currentPath, groupId.split(".").pop()!]);
     } else {
       setSelectedGroup(selectedGroup === groupId ? null : groupId);
     }
-  }, [currentPath, depth, onNavigate, selectedGroup]);
+  }, [currentPath, depth, onNavigate, selectedGroup, yOffset, onNodeClick]);
 
   return (
     <>
@@ -275,23 +325,32 @@ function Scene({ currentPath, onNavigate, fileContents }: SceneProps) {
       <pointLight position={[50, 50, 50]} intensity={1} />
       <pointLight position={[-50, -50, -50]} intensity={0.5} />
 
-      <GroupEdges edges={edges} nodePositions={nodePositions} />
+      {/* Axis helper - Red=X, Green=Y, Blue=Z */}
+      <axesHelper args={[100]} />
 
-      {groupNodes.map((group) => (
-        <GroupNode
-          key={group.id}
-          id={group.id}
-          position={group.position}
-          count={group.count}
-          color={group.color}
-          isSelected={selectedGroup === group.id}
-          onClick={() => handleClick(group.id)}
-          file={group.file}
-          code={group.file ? fileContents.get(group.file) || null : null}
-        />
-      ))}
+      {/* Grid on XZ plane */}
+      <gridHelper args={[200, 20, "#444444", "#222222"]} />
 
-      <OrbitControls makeDefault />
+      {/* Wrap everything in a group that moves with yOffset */}
+      <group position={[0, yOffset, 0]}>
+        <GroupEdges edges={edges} nodePositions={nodePositions} />
+
+        {groupNodes.map((group) => (
+          <GroupNode
+            key={group.id}
+            id={group.id}
+            position={group.position}
+            count={group.count}
+            color={group.color}
+            isSelected={selectedGroup === group.id}
+            onClick={() => handleClick(group.id, group.position)}
+            file={group.file}
+            code={group.file ? fileContents.get(group.file) || null : null}
+          />
+        ))}
+      </group>
+
+      <CameraController target={cameraTarget} panelWidth={20} />
     </>
   );
 }
@@ -560,6 +619,8 @@ export default function App() {
     loadAllFiles();
   }, []);
 
+  const [yOffset, setYOffset] = useState(0);
+
   const handleNavigate = useCallback((path: string[]) => {
     setCurrentPath(path);
   }, []);
@@ -568,8 +629,20 @@ export default function App() {
     setCurrentPath((prev) => prev.slice(0, -1));
   }, []);
 
+  const handleNodeClick = useCallback((_position: { x: number; y: number; z: number }) => {
+    // Could be used for additional logic when node is clicked
+  }, []);
+
+  // Handle scroll to move Y offset
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    setYOffset((prev) => prev - e.deltaY * 0.1);
+  }, []);
+
   return (
-    <div style={{ width: "100vw", height: "100vh", background: "#0f172a" }}>
+    <div
+      style={{ width: "100vw", height: "100vh", background: "#0f172a" }}
+      onWheel={handleWheel}
+    >
       {/* Control Panel */}
       <div
         style={{
@@ -650,7 +723,10 @@ export default function App() {
         )}
 
         <div style={{ fontSize: "11px", color: "#64748b" }}>
-          Click a node to drill down • Click file name (blue) to view code
+          Click a node to drill down • Scroll to move Y
+        </div>
+        <div style={{ fontSize: "11px", color: "#64748b", marginTop: "8px" }}>
+          Y offset: {yOffset.toFixed(1)}
         </div>
       </div>
 
@@ -675,6 +751,8 @@ export default function App() {
           currentPath={currentPath}
           onNavigate={handleNavigate}
           fileContents={fileContents}
+          yOffset={yOffset}
+          onNodeClick={handleNodeClick}
         />
       </Canvas>
     </div>
