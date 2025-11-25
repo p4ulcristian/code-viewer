@@ -185,8 +185,8 @@ function GroupNode({ id, position, count, color, isSelected, onClick, file, code
         {hasFile ? file!.split("/").pop() : `${count} ns`}
       </Text>
 
-      {/* Show code panel below only for selected node */}
-      {hasFile && isSelected && (
+      {/* Show code panel below if this is a real file */}
+      {hasFile && (
         <CodePanel3D
           nsId={id}
           filePath={file!}
@@ -231,7 +231,8 @@ interface SceneProps {
   onNavigate: (path: string[]) => void;
   fileContents: Map<string, string>; // Pre-loaded file contents
   yOffset: number;
-  onNodeClick: (position: { x: number; y: number; z: number }) => void;
+  cameraTarget: { x: number; y: number; z: number } | null;
+  onCameraTargetChange: (target: { x: number; y: number; z: number } | null) => void;
 }
 
 // Camera controller that moves camera in front of target, fitting panel to viewport
@@ -273,7 +274,7 @@ function CameraController({ target, panelWidth }: { target: { x: number; y: numb
   return <OrbitControls ref={controlsRef} makeDefault enablePan={false} enableZoom={false} />;
 }
 
-function Scene({ currentPath, onNavigate, fileContents, yOffset, onNodeClick }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, yOffset, cameraTarget, onCameraTargetChange }: SceneProps) {
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
 
@@ -300,7 +301,6 @@ function Scene({ currentPath, onNavigate, fileContents, yOffset, onNodeClick }: 
   }, [groupNodes]);
 
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
-  const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
 
   const handleClick = useCallback((groupId: string, position: { x: number; y: number; z: number }) => {
     const childGroups = getChildNamespaces(groupId, depth + 1);
@@ -309,15 +309,14 @@ function Scene({ currentPath, onNavigate, fileContents, yOffset, onNodeClick }: 
 
     // Set camera target to clicked node
     const targetPos = { x: position.x, y: position.y + yOffset, z: position.z };
-    setCameraTarget(targetPos);
-    onNodeClick(targetPos);
+    onCameraTargetChange(targetPos);
 
     if (hasChildren) {
       onNavigate([...currentPath, groupId.split(".").pop()!]);
     } else {
       setSelectedGroup(selectedGroup === groupId ? null : groupId);
     }
-  }, [currentPath, depth, onNavigate, selectedGroup, yOffset, onNodeClick]);
+  }, [currentPath, depth, onNavigate, selectedGroup, yOffset, onCameraTargetChange]);
 
   return (
     <>
@@ -620,17 +619,14 @@ export default function App() {
   }, []);
 
   const [yOffset, setYOffset] = useState(0);
+  const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
 
   const handleNavigate = useCallback((path: string[]) => {
     setCurrentPath(path);
   }, []);
 
-  const handleBack = useCallback(() => {
-    setCurrentPath((prev) => prev.slice(0, -1));
-  }, []);
-
-  const handleNodeClick = useCallback((_position: { x: number; y: number; z: number }) => {
-    // Could be used for additional logic when node is clicked
+  const handleCameraTargetChange = useCallback((target: { x: number; y: number; z: number } | null) => {
+    setCameraTarget(target);
   }, []);
 
   // Handle scroll to move Y offset
@@ -638,96 +634,127 @@ export default function App() {
     setYOffset((prev) => prev - e.deltaY * 0.1);
   }, []);
 
+  // Get visible child namespaces with their positions for left/right navigation
+  const getVisibleNamespacesWithPositions = useCallback(() => {
+    const depth = currentPath.length + 1;
+    const prefix = currentPath.join(".");
+
+    let groups: Map<string, typeof graphData.nodes>;
+    if (currentPath.length === 0) {
+      groups = getNamespacesAtDepth(1);
+    } else {
+      groups = getChildNamespaces(prefix, depth);
+    }
+
+    // Compute positions for these groups (same logic as computeGroupPositions)
+    const entries = Array.from(groups.entries());
+    const numGroups = entries.length;
+    const radius = 40;
+
+    return entries.map(([nsPrefix], idx) => {
+      const angle = (2 * Math.PI * idx) / numGroups;
+      const x = radius * Math.cos(angle);
+      const z = radius * Math.sin(angle);
+      return { id: nsPrefix, position: { x, y: 0, z } };
+    });
+  }, [currentPath]);
+
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  // Reset selected index when path changes
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [currentPath]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        // Go back one level and reset camera
+        setCameraTarget(null);
+        if (currentPath.length > 0) {
+          setCurrentPath((prev) => prev.slice(0, -1));
+        }
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        const visibleNodes = getVisibleNamespacesWithPositions();
+        if (visibleNodes.length === 0) return;
+
+        let newIndex: number;
+        if (e.key === "ArrowLeft") {
+          newIndex = (selectedIndex - 1 + visibleNodes.length) % visibleNodes.length;
+        } else {
+          newIndex = (selectedIndex + 1) % visibleNodes.length;
+        }
+
+        setSelectedIndex(newIndex);
+
+        // Set camera target to the selected node's position
+        const node = visibleNodes[newIndex];
+        const targetPos = {
+          x: node.position.x,
+          y: node.position.y + yOffset,
+          z: node.position.z
+        };
+        setCameraTarget(targetPos);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [currentPath, getVisibleNamespacesWithPositions, yOffset, selectedIndex]);
+
   return (
     <div
       style={{ width: "100vw", height: "100vh", background: "#0f172a" }}
       onWheel={handleWheel}
     >
-      {/* Control Panel */}
+      {/* Breadcrumb */}
       <div
         style={{
           position: "absolute",
           top: "16px",
           left: "16px",
           zIndex: 1000,
-          background: "white",
-          padding: "16px",
-          borderRadius: "8px",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-          maxWidth: "350px",
-        }}
-      >
-        <h3 style={{ margin: "0 0 12px 0", fontSize: "14px" }}>
-          Namespace Explorer
-        </h3>
-
-        <div style={{
           display: "flex",
           alignItems: "center",
           gap: "4px",
-          marginBottom: "12px",
           fontSize: "12px",
           flexWrap: "wrap",
-        }}>
-          <button
-            onClick={() => setCurrentPath([])}
-            style={{
-              background: currentPath.length === 0 ? "#3b82f6" : "#e2e8f0",
-              color: currentPath.length === 0 ? "white" : "#475569",
-              border: "none",
-              borderRadius: "4px",
-              padding: "4px 8px",
-              cursor: "pointer",
-              fontSize: "11px",
-            }}
-          >
-            root
-          </button>
-          {currentPath.map((part, idx) => (
-            <span key={idx} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-              <span style={{ color: "#94a3b8" }}>/</span>
-              <button
-                onClick={() => setCurrentPath(currentPath.slice(0, idx + 1))}
-                style={{
-                  background: idx === currentPath.length - 1 ? "#3b82f6" : "#e2e8f0",
-                  color: idx === currentPath.length - 1 ? "white" : "#475569",
-                  border: "none",
-                  borderRadius: "4px",
-                  padding: "4px 8px",
-                  cursor: "pointer",
-                  fontSize: "11px",
-                }}
-              >
-                {part}
-              </button>
-            </span>
-          ))}
-        </div>
-
-        {currentPath.length > 0 && (
-          <button
-            onClick={handleBack}
-            style={{
-              background: "#64748b",
-              color: "white",
-              border: "none",
-              borderRadius: "4px",
-              padding: "6px 12px",
-              cursor: "pointer",
-              fontSize: "12px",
-              marginBottom: "12px",
-            }}
-          >
-            ← Back
-          </button>
-        )}
-
-        <div style={{ fontSize: "11px", color: "#64748b" }}>
-          Click a node to drill down • Scroll to move Y
-        </div>
-        <div style={{ fontSize: "11px", color: "#64748b", marginTop: "8px" }}>
-          Y offset: {yOffset.toFixed(1)}
-        </div>
+        }}
+      >
+        <button
+          onClick={() => setCurrentPath([])}
+          style={{
+            background: currentPath.length === 0 ? "#3b82f6" : "rgba(255,255,255,0.1)",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            padding: "6px 10px",
+            cursor: "pointer",
+            fontSize: "12px",
+          }}
+        >
+          root
+        </button>
+        {currentPath.map((part, idx) => (
+          <span key={idx} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            <span style={{ color: "#64748b" }}>/</span>
+            <button
+              onClick={() => setCurrentPath(currentPath.slice(0, idx + 1))}
+              style={{
+                background: idx === currentPath.length - 1 ? "#3b82f6" : "rgba(255,255,255,0.1)",
+                color: "white",
+                border: "none",
+                borderRadius: "4px",
+                padding: "6px 10px",
+                cursor: "pointer",
+                fontSize: "12px",
+              }}
+            >
+              {part}
+            </button>
+          </span>
+        ))}
       </div>
 
       {loading && (
@@ -752,7 +779,8 @@ export default function App() {
           onNavigate={handleNavigate}
           fileContents={fileContents}
           yOffset={yOffset}
-          onNodeClick={handleNodeClick}
+          cameraTarget={cameraTarget}
+          onCameraTargetChange={handleCameraTargetChange}
         />
       </Canvas>
     </div>
