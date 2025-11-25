@@ -37,16 +37,14 @@ function getNamespacesAtDepth(depth: number): Map<string, typeof graphData.nodes
   return groups;
 }
 
-// Grid helper: get X position for an item at given index in a row of n items
-function gridX(index: number, totalItems: number): number {
-  const totalWidth = (totalItems - 1) * GRID.CELL_WIDTH;
-  const startX = -totalWidth / 2;
-  return startX + index * GRID.CELL_WIDTH;
+// Grid helper: get X position for an item at given index (starts at 0,0 and goes right)
+function gridX(index: number): number {
+  return index * GRID.CELL_WIDTH;
 }
 
 // Grid helper: get position for grid cell
-function gridPosition(index: number, totalItems: number): { x: number; y: number; z: number } {
-  return { x: gridX(index, totalItems), y: 0, z: 0 };
+function gridPosition(index: number): { x: number; y: number; z: number } {
+  return { x: gridX(index), y: 0, z: 0 };
 }
 
 // Compute positions for groups using grid system
@@ -69,7 +67,7 @@ function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, curr
 
     return {
       id: prefix,
-      position: gridPosition(idx, totalItems),
+      position: gridPosition(idx),
       index: idx,
       color: GRID.NODE_COLOR,
       file,
@@ -422,8 +420,8 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
       (childGroups.size === 1 && !childGroups.has(groupId));
 
     if (hasChildren) {
-      // For non-file nodes, only center X (keep current Y and Z)
-      onCameraTargetChange({ x: position.x, y: 0, z: 0 });
+      // For non-file nodes, reset camera to origin and enter namespace
+      onCameraTargetChange({ x: 0, y: 0, z: 0 });
       onNavigate([...currentPath, groupId.split(".").pop()!]);
     } else {
       // For file nodes, center on the full position
@@ -767,16 +765,20 @@ export default function App() {
     return entries.map(([nsPrefix], idx) => ({
       id: nsPrefix,
       index: idx,
-      position: gridPosition(idx, totalItems),
+      position: gridPosition(idx),
     }));
   }, [currentPath]);
 
   const [selectedIndex, setSelectedIndex] = useState(0);
 
-  // Reset selected index when path changes
+  // Select first node when path changes
   useEffect(() => {
     setSelectedIndex(0);
-  }, [currentPath]);
+    const visibleNodes = getVisibleNamespacesWithPositions();
+    if (visibleNodes.length > 0) {
+      setSelectedGroup(visibleNodes[0].id);
+    }
+  }, [currentPath, getVisibleNamespacesWithPositions]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -808,12 +810,21 @@ export default function App() {
         setCameraTarget(node.position);
         setSelectedGroup(node.id);
       } else if (e.key === " " && selectedGroup) {
-        // Space = enter the selected namespace
         e.preventDefault();
-        const lastPart = selectedGroup.split(".").pop()!;
-        setCurrentPath([...currentPath, lastPart]);
-        setSelectedGroup(null);
-        setSelectedIndex(0);
+        // Check if selected namespace has children (not a file)
+        const depth = currentPath.length + 1;
+        const childGroups = getChildNamespaces(selectedGroup, depth + 1);
+        const hasChildren = childGroups.size > 1 ||
+          (childGroups.size === 1 && !childGroups.has(selectedGroup));
+
+        if (hasChildren) {
+          // Space = enter the selected namespace (only if not a file)
+          const lastPart = selectedGroup.split(".").pop()!;
+          setCurrentPath([...currentPath, lastPart]);
+          setSelectedGroup(null);
+          setSelectedIndex(0);
+          setCameraTarget({ x: 0, y: 0, z: 0 }); // Reset camera to origin
+        }
       }
     };
 
