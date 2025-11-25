@@ -134,9 +134,10 @@ interface GroupNodeProps {
   file: string | null; // Single file for this namespace (if it's a real file)
   code: string | null; // Pre-loaded code content
   childNamespaces: string[]; // Child namespace names for non-file nodes
+  onPanelClick: (panelCenter: { x: number; y: number; z: number }, panelWidth: number) => void;
 }
 
-function GroupNode({ id, position, color, isSelected, onClick, file, code, childNamespaces }: GroupNodeProps) {
+function GroupNode({ id, position, color, isSelected, onClick, file, code, childNamespaces, onPanelClick }: GroupNodeProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const size = 2; // Same size for all
 
@@ -200,7 +201,8 @@ function GroupNode({ id, position, color, isSelected, onClick, file, code, child
           nsId={id}
           filePath={file!}
           code={code!}
-          position={{ x: 0, y: 0, z: 0 }}
+          position={position}
+          onPanelClick={onPanelClick}
         />
       )}
     </group>
@@ -243,6 +245,8 @@ interface SceneProps {
   onCameraTargetChange: (target: { x: number; y: number; z: number } | null) => void;
   selectedGroup: string | null;
   onSelectedGroupChange: (group: string | null) => void;
+  isPanelView: boolean;
+  onPanelViewChange: (isPanelView: boolean) => void;
 }
 
 // Camera controller that moves camera in front of target
@@ -388,9 +392,10 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange }: SceneProps) {
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
+  const prevPositionRef = useRef<{ x: number; y: number; z: number } | null>(null);
 
   const groups = useMemo(() => {
     if (currentPath.length === 0) {
@@ -428,7 +433,23 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
       onCameraTargetChange(position);
       onSelectedGroupChange(selectedGroup === groupId ? null : groupId);
     }
-  }, [currentPath, depth, onNavigate, selectedGroup, onCameraTargetChange, onSelectedGroupChange]);
+    onPanelViewChange(false);
+  }, [currentPath, depth, onNavigate, selectedGroup, onCameraTargetChange, onSelectedGroupChange, onPanelViewChange]);
+
+  const handlePanelClick = useCallback((panelCenter: { x: number; y: number; z: number }, panelWidth: number) => {
+    if (isPanelView) {
+      // Already in panel view, go back to previous position
+      if (prevPositionRef.current) {
+        onCameraTargetChange(prevPositionRef.current);
+      }
+      onPanelViewChange(false);
+    } else {
+      // Save current target and switch to panel view
+      prevPositionRef.current = cameraTarget;
+      onCameraTargetChange(panelCenter);
+      onPanelViewChange(true);
+    }
+  }, [isPanelView, cameraTarget, onCameraTargetChange, onPanelViewChange]);
 
   return (
     <>
@@ -453,6 +474,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
             file={group.file}
             code={group.file ? fileContents.get(group.file) || null : null}
             childNamespaces={group.childNamespaces}
+            onPanelClick={handlePanelClick}
           />
         ))}
       </group>
@@ -574,11 +596,13 @@ function CodePanel3D({
   filePath,
   code,
   position,
+  onPanelClick,
 }: {
   nsId: string;
   filePath: string;
   code: string;
   position: { x: number; y: number; z: number };
+  onPanelClick: (panelCenter: { x: number; y: number; z: number }, panelWidth: number) => void;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
@@ -667,10 +691,17 @@ function CodePanel3D({
   // Position below the sphere, offset by half the height so top is at y=-5
   const yOffset = -5 - planeHeight / 2;
 
+  const handleClick = (e: any) => {
+    e.stopPropagation();
+    // Calculate world position of panel center
+    onPanelClick({ x: position.x, y: yOffset, z: position.z }, planeWidth);
+  };
+
   return (
     <mesh
       ref={meshRef}
       position={[0, yOffset, 0]}
+      onClick={handleClick}
     >
       <planeGeometry args={[planeWidth, planeHeight]} />
       {texture && (
@@ -732,6 +763,7 @@ export default function App() {
 
   const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
+  const [isPanelView, setIsPanelView] = useState(false);
 
   const handleNavigate = useCallback((path: string[]) => {
     setCurrentPath(path);
@@ -745,6 +777,9 @@ export default function App() {
     setSelectedGroup(group);
   }, []);
 
+  const handlePanelViewChange = useCallback((panelView: boolean) => {
+    setIsPanelView(panelView);
+  }, []);
 
   // Get visible child namespaces with their positions for left/right navigation
   const getVisibleNamespacesWithPositions = useCallback(() => {
@@ -824,13 +859,30 @@ export default function App() {
           setSelectedGroup(null);
           setSelectedIndex(0);
           setCameraTarget({ x: 0, y: 0, z: 0 }); // Reset camera to origin
+          setIsPanelView(false);
+        } else {
+          // It's a file - toggle panel view
+          const visibleNodes = getVisibleNamespacesWithPositions();
+          const node = visibleNodes.find(n => n.id === selectedGroup);
+          if (node) {
+            if (isPanelView) {
+              // Go back to node position
+              setCameraTarget(node.position);
+              setIsPanelView(false);
+            } else {
+              // Go to panel view (below the node)
+              const panelY = -5 - 10; // Approximate panel center
+              setCameraTarget({ x: node.position.x, y: panelY, z: node.position.z });
+              setIsPanelView(true);
+            }
+          }
         }
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup]);
+  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup, isPanelView]);
 
   return (
     <div
@@ -910,6 +962,8 @@ export default function App() {
           onCameraTargetChange={handleCameraTargetChange}
           selectedGroup={selectedGroup}
           onSelectedGroupChange={handleSelectedGroupChange}
+          isPanelView={isPanelView}
+          onPanelViewChange={handlePanelViewChange}
         />
       </Canvas>
     </div>
