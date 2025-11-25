@@ -49,8 +49,8 @@ function getNamespacesAtDepth(depth: number): Map<string, typeof graphData.nodes
   return groups;
 }
 
-// Compute positions for groups in a circle
-function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, radius: number = 40) {
+// Compute positions for groups in a horizontal line
+function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, spacing: number = 25) {
   const result: Array<{
     id: string;
     position: { x: number; y: number; z: number };
@@ -61,10 +61,12 @@ function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, radi
   const entries = Array.from(groups.entries());
   const numGroups = entries.length;
 
+  // Center the line around origin
+  const totalWidth = (numGroups - 1) * spacing;
+  const startX = -totalWidth / 2;
+
   entries.forEach(([prefix, nodes], idx) => {
-    const angle = (2 * Math.PI * idx) / numGroups;
-    const x = radius * Math.cos(angle);
-    const z = radius * Math.sin(angle);
+    const x = startX + idx * spacing;
 
     const color = categoryColors[prefix] || categoryColors[prefix.split(".")[0]] || categoryColors.other;
 
@@ -74,7 +76,7 @@ function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, radi
 
     result.push({
       id: prefix,
-      position: { x, y: 0, z },
+      position: { x, y: 0, z: 0 },
       count: nodes.length,
       color,
       file,
@@ -230,51 +232,133 @@ interface SceneProps {
   currentPath: string[];
   onNavigate: (path: string[]) => void;
   fileContents: Map<string, string>; // Pre-loaded file contents
-  yOffset: number;
   cameraTarget: { x: number; y: number; z: number } | null;
   onCameraTargetChange: (target: { x: number; y: number; z: number } | null) => void;
 }
 
-// Camera controller that moves camera in front of target, fitting panel to viewport
+// Camera controller that moves camera in front of target
 function CameraController({ target, panelWidth }: { target: { x: number; y: number; z: number } | null; panelWidth: number }) {
-  const { camera, size } = useThree();
+  const { camera, size, gl } = useThree();
   const controlsRef = useRef<any>(null);
-  const targetPos = useRef(new THREE.Vector3(0, 0, 0));
-  const cameraPos = useRef(new THREE.Vector3(0, 60, 80));
+  const prevTargetRef = useRef<string | null>(null);
+  const animationRef = useRef<number | null>(null);
+
+  // Handle scroll for panning (shift+scroll or horizontal) and zoom (ctrl+scroll or pinch)
+  useEffect(() => {
+    const canvas = gl.domElement;
+
+    const handleWheel = (e: WheelEvent) => {
+      if (!controlsRef.current) return;
+
+      // Ctrl+scroll or pinch = zoom (let OrbitControls handle it)
+      if (e.ctrlKey || e.metaKey) {
+        return; // Don't prevent default, let OrbitControls zoom
+      }
+
+      // Regular scroll = pan
+      e.preventDefault();
+      const panSpeed = 0.5;
+
+      // Get camera's right and up vectors for proper panning
+      const right = new THREE.Vector3();
+      const up = new THREE.Vector3();
+      camera.matrix.extractBasis(right, up, new THREE.Vector3());
+
+      // Pan based on scroll delta
+      const deltaX = e.deltaX * panSpeed;
+      const deltaY = e.deltaY * panSpeed;
+
+      camera.position.addScaledVector(right, deltaX);
+      camera.position.addScaledVector(up, -deltaY);
+      controlsRef.current.target.addScaledVector(right, deltaX);
+      controlsRef.current.target.addScaledVector(up, -deltaY);
+      controlsRef.current.update();
+    };
+
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [gl, camera]);
 
   useEffect(() => {
+    if (!controlsRef.current) return;
+
+    // Serialize target to compare - only animate if target actually changed
+    const targetKey = target ? `${target.x},${target.y},${target.z}` : null;
+    if (targetKey === prevTargetRef.current) return;
+    prevTargetRef.current = targetKey;
+
+    // Cancel any ongoing animation
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+
+    let targetPos: THREE.Vector3;
+    let cameraPos: THREE.Vector3;
+
     if (target) {
-      // Set target exactly on the node
-      targetPos.current.set(target.x, target.y, target.z);
+      targetPos = new THREE.Vector3(target.x, target.y, target.z);
 
       // Calculate distance needed to fit panel width in viewport
-      // Using horizontal FOV: hFov = 2 * atan(tan(vFov/2) * aspect)
       const vFov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
       const aspect = size.width / size.height;
       const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
-
-      // Distance = (panelWidth / 2) / tan(hFov / 2)
-      // Add some padding (0.9 to leave 10% margin on each side)
       const distance = (panelWidth / 2) / Math.tan(hFov / 2) / 0.85;
 
-      // Position camera directly in front
-      cameraPos.current.set(target.x, target.y, target.z + distance);
+      cameraPos = new THREE.Vector3(target.x, target.y, target.z + distance);
+    } else {
+      // Reset to original camera position
+      targetPos = new THREE.Vector3(0, 0, 0);
+      cameraPos = new THREE.Vector3(0, 60, 80);
     }
+
+    // Animate camera to new position
+    const startPos = camera.position.clone();
+    const startTarget = controlsRef.current.target.clone();
+    let progress = 0;
+
+    const animate = () => {
+      progress += 0.05;
+      if (progress >= 1) {
+        camera.position.copy(cameraPos);
+        controlsRef.current.target.copy(targetPos);
+        controlsRef.current.update();
+        animationRef.current = null;
+        return;
+      }
+
+      camera.position.lerpVectors(startPos, cameraPos, progress);
+      controlsRef.current.target.lerpVectors(startTarget, targetPos, progress);
+      controlsRef.current.update();
+      animationRef.current = requestAnimationFrame(animate);
+    };
+
+    animate();
+
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
   }, [target, panelWidth, camera, size]);
 
-  useFrame(() => {
-    if (controlsRef.current) {
-      // Smoothly interpolate camera position and target
-      camera.position.lerp(cameraPos.current, 0.05);
-      controlsRef.current.target.lerp(targetPos.current, 0.05);
-      controlsRef.current.update();
-    }
-  });
-
-  return <OrbitControls ref={controlsRef} makeDefault enablePan={false} enableZoom={false} />;
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      makeDefault
+      enablePan={true}
+      enableZoom={false}
+      screenSpacePanning={true}
+      mouseButtons={{
+        LEFT: THREE.MOUSE.ROTATE,
+        MIDDLE: THREE.MOUSE.PAN,
+        RIGHT: THREE.MOUSE.PAN
+      }}
+    />
+  );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, yOffset, cameraTarget, onCameraTargetChange }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange }: SceneProps) {
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
 
@@ -292,9 +376,9 @@ function Scene({ currentPath, onNavigate, fileContents, yOffset, cameraTarget, o
 
   const nodePositions = useMemo(() => {
     const map = new Map<string, { x: number; y: number; z: number }>();
-    groupNodes.forEach((g) => map.set(g.id, { ...g.position, y: g.position.y + yOffset }));
+    groupNodes.forEach((g) => map.set(g.id, g.position));
     return map;
-  }, [groupNodes, yOffset]);
+  }, [groupNodes]);
 
   const edges = useMemo(() => {
     return getEdgesBetweenGroups(groupNodes.map((g) => g.id));
@@ -308,15 +392,14 @@ function Scene({ currentPath, onNavigate, fileContents, yOffset, cameraTarget, o
       (childGroups.size === 1 && !childGroups.has(groupId));
 
     // Set camera target to clicked node
-    const targetPos = { x: position.x, y: position.y + yOffset, z: position.z };
-    onCameraTargetChange(targetPos);
+    onCameraTargetChange(position);
 
     if (hasChildren) {
       onNavigate([...currentPath, groupId.split(".").pop()!]);
     } else {
       setSelectedGroup(selectedGroup === groupId ? null : groupId);
     }
-  }, [currentPath, depth, onNavigate, selectedGroup, yOffset, onCameraTargetChange]);
+  }, [currentPath, depth, onNavigate, selectedGroup, onCameraTargetChange]);
 
   return (
     <>
@@ -330,8 +413,7 @@ function Scene({ currentPath, onNavigate, fileContents, yOffset, cameraTarget, o
       {/* Grid on XZ plane */}
       <gridHelper args={[200, 20, "#444444", "#222222"]} />
 
-      {/* Wrap everything in a group that moves with yOffset */}
-      <group position={[0, yOffset, 0]}>
+      <group>
         <GroupEdges edges={edges} nodePositions={nodePositions} />
 
         {groupNodes.map((group) => (
@@ -618,7 +700,6 @@ export default function App() {
     loadAllFiles();
   }, []);
 
-  const [yOffset, setYOffset] = useState(0);
   const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
 
   const handleNavigate = useCallback((path: string[]) => {
@@ -629,10 +710,6 @@ export default function App() {
     setCameraTarget(target);
   }, []);
 
-  // Handle scroll to move Y offset
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    setYOffset((prev) => prev - e.deltaY * 0.1);
-  }, []);
 
   // Get visible child namespaces with their positions for left/right navigation
   const getVisibleNamespacesWithPositions = useCallback(() => {
@@ -649,13 +726,13 @@ export default function App() {
     // Compute positions for these groups (same logic as computeGroupPositions)
     const entries = Array.from(groups.entries());
     const numGroups = entries.length;
-    const radius = 40;
+    const spacing = 25;
+    const totalWidth = (numGroups - 1) * spacing;
+    const startX = -totalWidth / 2;
 
     return entries.map(([nsPrefix], idx) => {
-      const angle = (2 * Math.PI * idx) / numGroups;
-      const x = radius * Math.cos(angle);
-      const z = radius * Math.sin(angle);
-      return { id: nsPrefix, position: { x, y: 0, z } };
+      const x = startX + idx * spacing;
+      return { id: nsPrefix, position: { x, y: 0, z: 0 } };
     });
   }, [currentPath]);
 
@@ -670,11 +747,8 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        // Go back one level and reset camera
+        // Reset camera to original position
         setCameraTarget(null);
-        if (currentPath.length > 0) {
-          setCurrentPath((prev) => prev.slice(0, -1));
-        }
       } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         const visibleNodes = getVisibleNamespacesWithPositions();
         if (visibleNodes.length === 0) return;
@@ -690,23 +764,17 @@ export default function App() {
 
         // Set camera target to the selected node's position
         const node = visibleNodes[newIndex];
-        const targetPos = {
-          x: node.position.x,
-          y: node.position.y + yOffset,
-          z: node.position.z
-        };
-        setCameraTarget(targetPos);
+        setCameraTarget(node.position);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentPath, getVisibleNamespacesWithPositions, yOffset, selectedIndex]);
+  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex]);
 
   return (
     <div
       style={{ width: "100vw", height: "100vh", background: "#0f172a" }}
-      onWheel={handleWheel}
     >
       {/* Breadcrumb */}
       <div
@@ -778,7 +846,6 @@ export default function App() {
           currentPath={currentPath}
           onNavigate={handleNavigate}
           fileContents={fileContents}
-          yOffset={yOffset}
           cameraTarget={cameraTarget}
           onCameraTargetChange={handleCameraTargetChange}
         />
