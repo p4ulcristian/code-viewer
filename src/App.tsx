@@ -4,6 +4,9 @@ import { OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { graphData } from "./graph-data";
 import { Terminal3D } from "./components/Terminal3D";
+import { ProjectSetup } from "./components/ProjectSetup";
+
+const STORAGE_KEY = 'ns-visualizer-project-path';
 
 // Grid system constants
 const GRID = {
@@ -249,6 +252,7 @@ interface SceneProps {
   isPanelView: boolean;
   onPanelViewChange: (isPanelView: boolean) => void;
   showTerminal: boolean;
+  projectPath: string | null;
 }
 
 // Camera controller that moves camera in front of target
@@ -414,7 +418,7 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds }:
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, projectPath }: SceneProps) {
   const { camera, size } = useThree();
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
@@ -558,6 +562,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
           position={[-80, 0, 30]}
           width={terminalWidth}
           height={terminalHeight}
+          cwd={projectPath ?? undefined}
         />
       )}
     </>
@@ -798,12 +803,31 @@ function getAllFilePaths(): string[] {
 }
 
 export default function App() {
+  // Project path state - load from localStorage
+  const [projectPath, setProjectPath] = useState<string | null>(() => {
+    return localStorage.getItem(STORAGE_KEY);
+  });
+  const [showProjectSetup, setShowProjectSetup] = useState(!projectPath);
+
+  const handleProjectSelect = useCallback((path: string) => {
+    localStorage.setItem(STORAGE_KEY, path);
+    setProjectPath(path);
+    setShowProjectSetup(false);
+    // Reload page to reinitialize everything with new project
+    window.location.reload();
+  }, []);
+
   const [currentPath, setCurrentPath] = useState<string[]>([]);
   const [fileContents, setFileContents] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
 
   // Load all files on mount
   useEffect(() => {
+    if (!projectPath) {
+      setLoading(false);
+      return;
+    }
+
     const loadAllFiles = async () => {
       const paths = getAllFilePaths();
       const contents = new Map<string, string>();
@@ -815,7 +839,7 @@ export default function App() {
         const results = await Promise.all(
           batch.map(async (path) => {
             try {
-              const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`);
+              const response = await fetch(`/api/file?path=${encodeURIComponent(path)}&project=${encodeURIComponent(projectPath)}`);
               if (response.ok) {
                 return { path, code: await response.text() };
               }
@@ -835,7 +859,41 @@ export default function App() {
     };
 
     loadAllFiles();
-  }, []);
+  }, [projectPath]);
+
+  // clj-kondo results state
+  const [kondoResults, setKondoResults] = useState<{ findings: any[]; summary: any } | null>(null);
+  const [kondoRunning, setKondoRunning] = useState(false);
+
+  // Run clj-kondo on project start
+  useEffect(() => {
+    if (!projectPath) return;
+
+    const runKondo = async () => {
+      setKondoRunning(true);
+      try {
+        const response = await fetch(`/api/clj-kondo?project=${encodeURIComponent(projectPath)}`);
+        const data = await response.json();
+        if (data.output) {
+          try {
+            const parsed = JSON.parse(data.output);
+            setKondoResults(parsed);
+            console.log('[clj-kondo] Results:', parsed);
+          } catch {
+            console.log('[clj-kondo] Raw output:', data.output);
+          }
+        }
+        if (data.errors) {
+          console.log('[clj-kondo] Errors:', data.errors);
+        }
+      } catch (e) {
+        console.error('[clj-kondo] Failed to run:', e);
+      }
+      setKondoRunning(false);
+    };
+
+    runKondo();
+  }, [projectPath]);
 
   const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
@@ -1116,8 +1174,88 @@ export default function App() {
           isPanelView={isPanelView}
           onPanelViewChange={handlePanelViewChange}
           showTerminal={showTerminal}
+          projectPath={projectPath}
         />
       </Canvas>
+
+      {/* Project path display and change button */}
+      {projectPath && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: "16px",
+            left: "16px",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <span style={{ color: "#64748b", fontSize: "12px", fontFamily: "monospace" }}>
+            {projectPath}
+          </span>
+          <button
+            onClick={() => setShowProjectSetup(true)}
+            style={{
+              background: "rgba(255,255,255,0.1)",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              padding: "4px 8px",
+              cursor: "pointer",
+              fontSize: "11px",
+            }}
+          >
+            Change
+          </button>
+        </div>
+      )}
+
+      {/* clj-kondo status indicator */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: "16px",
+          right: "16px",
+          zIndex: 1000,
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+          padding: "6px 12px",
+          background: "rgba(0,0,0,0.6)",
+          borderRadius: "4px",
+          fontSize: "12px",
+        }}
+      >
+        {kondoRunning ? (
+          <span style={{ color: "#fbbf24" }}>clj-kondo running...</span>
+        ) : kondoResults ? (
+          <>
+            <span style={{ color: kondoResults.summary?.error > 0 ? "#f87171" : kondoResults.summary?.warning > 0 ? "#fbbf24" : "#4ade80" }}>
+              clj-kondo:
+            </span>
+            {kondoResults.summary?.error > 0 && (
+              <span style={{ color: "#f87171" }}>{kondoResults.summary.error} errors</span>
+            )}
+            {kondoResults.summary?.warning > 0 && (
+              <span style={{ color: "#fbbf24" }}>{kondoResults.summary.warning} warnings</span>
+            )}
+            {!kondoResults.summary?.error && !kondoResults.summary?.warning && (
+              <span style={{ color: "#4ade80" }}>OK</span>
+            )}
+          </>
+        ) : (
+          <span style={{ color: "#64748b" }}>clj-kondo</span>
+        )}
+      </div>
+
+      {/* Project setup modal */}
+      {showProjectSetup && (
+        <ProjectSetup
+          onProjectSelect={handleProjectSelect}
+          initialPath={projectPath || undefined}
+        />
+      )}
     </div>
   );
 }

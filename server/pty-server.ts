@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawn, IPty } from 'node-pty';
+import { IncomingMessage } from 'http';
 
 const PORT = 8765;
 
@@ -7,8 +8,13 @@ const wss = new WebSocketServer({ port: PORT });
 
 console.log(`PTY WebSocket server running on ws://localhost:${PORT}`);
 
-wss.on('connection', (ws: WebSocket) => {
+wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   console.log('Client connected');
+
+  // Parse cwd from query string
+  const url = new URL(req.url || '', `http://localhost:${PORT}`);
+  const cwd = url.searchParams.get('cwd') || process.env.HOME || '/home';
+  console.log('Working directory:', cwd);
 
   // Use bash with login shell to get proper environment
   const shell = '/bin/bash';
@@ -18,7 +24,7 @@ wss.on('connection', (ws: WebSocket) => {
     name: 'xterm-256color',
     cols: 160,
     rows: 50,
-    cwd: process.env.HOME || '/home',
+    cwd,
     env: {
       ...process.env,
       TERM: 'xterm-256color',

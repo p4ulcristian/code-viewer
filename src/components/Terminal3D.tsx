@@ -11,26 +11,68 @@ interface Terminal3DProps {
   width?: number;
   height?: number;
   wsUrl?: string;
+  cwd?: string;
 }
+
+// Singleton state to keep terminal alive across component remounts
+const terminalState = {
+  initialized: false,
+  container: null as HTMLDivElement | null,
+  terminal: null as Terminal | null,
+  ws: null as WebSocket | null,
+  renderCanvas: null as HTMLCanvasElement | null,
+  currentCwd: null as string | null,
+};
 
 export function Terminal3D({
   position = [0, 0, 0],
   width = 30,
   height = 20,
   wsUrl = 'ws://localhost:8765',
+  cwd,
 }: Terminal3DProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const materialRef = useRef<THREE.MeshBasicMaterial>(null);
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const renderCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [textureReady, setTextureReady] = useState(false);
 
   useEffect(() => {
-    console.log('[Terminal3D] Mounting');
+    console.log('[Terminal3D] Mounting, initialized:', terminalState.initialized);
+
+    // If already initialized, just reuse existing terminal
+    if (terminalState.initialized && terminalState.container && terminalState.terminal) {
+      console.log('[Terminal3D] Reusing existing terminal');
+
+      // Create texture from existing render canvas
+      if (terminalState.renderCanvas) {
+        const tex = new THREE.CanvasTexture(terminalState.renderCanvas);
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+        textureRef.current = tex;
+        setTextureReady(true);
+      }
+
+      // Focus terminal
+      setTimeout(() => {
+        const textarea = terminalState.container?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
+        if (textarea) {
+          textarea.style.pointerEvents = 'auto';
+          textarea.focus();
+        }
+      }, 100);
+
+      return () => {
+        console.log('[Terminal3D] Unmounting (keeping terminal alive)');
+      };
+    }
+
+    // First time initialization
+    terminalState.initialized = true;
+    terminalState.currentCwd = cwd || null;
+    console.log('[Terminal3D] Creating new terminal, cwd:', cwd);
 
     // Create container for xterm
-    // Must be visible in viewport for canvas to render properly
     const container = document.createElement('div');
     container.style.position = 'fixed';
     container.style.left = '0';
@@ -39,10 +81,10 @@ export function Terminal3D({
     container.style.height = '1280px';
     container.style.overflow = 'hidden';
     container.style.pointerEvents = 'none';
-    container.style.opacity = '0.01'; // Nearly invisible but still renders
+    container.style.opacity = '0.01';
     container.style.zIndex = '-1';
     document.body.appendChild(container);
-    containerRef.current = container;
+    terminalState.container = container;
 
     const cols = 160;
     const rows = 50;
@@ -81,18 +123,19 @@ export function Terminal3D({
       rows,
     });
 
+    terminalState.terminal = term;
+
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
     term.open(container);
 
-    // Load canvas addon for texture rendering
     const canvasAddon = new CanvasAddon();
     term.loadAddon(canvasAddon);
 
     term.write('Connecting to PTY server...\r\n');
 
-    // Setup texture after canvas is ready
+    // Setup texture
     const setupTexture = () => {
       const canvases = container.querySelectorAll('.xterm-screen canvas');
       if (canvases.length > 0) {
@@ -100,7 +143,7 @@ export function Terminal3D({
         const renderCanvas = document.createElement('canvas');
         renderCanvas.width = firstCanvas.width;
         renderCanvas.height = firstCanvas.height;
-        renderCanvasRef.current = renderCanvas;
+        terminalState.renderCanvas = renderCanvas;
 
         const tex = new THREE.CanvasTexture(renderCanvas);
         tex.minFilter = THREE.LinearFilter;
@@ -114,7 +157,6 @@ export function Terminal3D({
       return false;
     };
 
-    // Retry until canvas is available
     const trySetup = () => {
       if (!setupTexture()) {
         setTimeout(trySetup, 100);
@@ -122,14 +164,15 @@ export function Terminal3D({
     };
     setTimeout(trySetup, 100);
 
-    // Connect WebSocket
-    const ws = new WebSocket(wsUrl);
+    // Connect WebSocket with cwd parameter
+    const wsUrlWithCwd = cwd ? `${wsUrl}?cwd=${encodeURIComponent(cwd)}` : wsUrl;
+    const ws = new WebSocket(wsUrlWithCwd);
+    terminalState.ws = ws;
 
     ws.onopen = () => {
       console.log('[Terminal3D] WebSocket connected');
       term.write('\x1b[2K\rConnected!\r\n');
       ws.send(`\x1b[8;${rows};${cols}t`);
-      // Focus terminal and enable pointer events on textarea
       setTimeout(() => {
         const textarea = container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
         if (textarea) {
@@ -158,25 +201,21 @@ export function Terminal3D({
     });
 
     return () => {
-      console.log('[Terminal3D] Cleanup');
-      ws.close();
-      term.dispose();
-      container.remove();
+      console.log('[Terminal3D] Unmounting (keeping terminal alive)');
+      // Don't cleanup - keep terminal alive for next mount
     };
-  }, [wsUrl]);
+  }, [wsUrl, cwd]);
 
   // Update texture every frame
   useFrame(() => {
-    if (!materialRef.current || !renderCanvasRef.current || !containerRef.current || !textureRef.current) return;
+    if (!materialRef.current || !terminalState.renderCanvas || !terminalState.container || !textureRef.current) return;
 
-    const ctx = renderCanvasRef.current.getContext('2d');
+    const ctx = terminalState.renderCanvas.getContext('2d');
     if (ctx) {
-      // Clear background
       ctx.fillStyle = '#1a1a2e';
-      ctx.fillRect(0, 0, renderCanvasRef.current.width, renderCanvasRef.current.height);
+      ctx.fillRect(0, 0, terminalState.renderCanvas.width, terminalState.renderCanvas.height);
 
-      // Composite xterm canvases
-      const canvases = containerRef.current.querySelectorAll('.xterm-screen canvas');
+      const canvases = terminalState.container.querySelectorAll('.xterm-screen canvas');
       canvases.forEach((canvas) => {
         const c = canvas as HTMLCanvasElement;
         if (c.width > 0 && c.height > 0) {
@@ -186,21 +225,18 @@ export function Terminal3D({
 
       textureRef.current.needsUpdate = true;
 
-      // Apply texture to material
       if (materialRef.current.map !== textureRef.current) {
         materialRef.current.map = textureRef.current;
-        materialRef.current.color.set('#888888'); // Dimmed to match scene
+        materialRef.current.color.set('#888888');
         materialRef.current.needsUpdate = true;
       }
     }
   });
 
-  // Click to focus
   const handlePointerDown = useCallback((e: any) => {
     e.stopPropagation();
-    // Need a small delay to ensure the click doesn't get eaten
     setTimeout(() => {
-      const textarea = containerRef.current?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
+      const textarea = terminalState.container?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
       if (textarea) {
         textarea.style.pointerEvents = 'auto';
         textarea.focus();
