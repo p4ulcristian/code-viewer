@@ -4,25 +4,13 @@ import { OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { graphData } from "./graph-data";
 
-const categoryColors: Record<string, string> = {
-  features: "#3b82f6",
-  "features.common": "#3b82f6",
-  "features.customizer": "#8b5cf6",
-  "features.flex": "#10b981",
-  "features.labs": "#f59e0b",
-  schemas: "#ef4444",
-  zero: "#6366f1",
-  authentication: "#ec4899",
-  database: "#14b8a6",
-  ui: "#f97316",
-  router: "#84cc16",
-  parquery: "#06b6d4",
-  app: "#a855f7",
-  users: "#0ea5e9",
-  validation: "#64748b",
-  email: "#f43f5e",
-  "demo-data": "#78716c",
-  other: "#6b7280",
+// Grid system constants
+const GRID = {
+  CELL_WIDTH: 25,    // X spacing between items
+  CELL_HEIGHT: 40,   // Y spacing between levels (not used yet, for future)
+  CAMERA_Z: 100,     // Default camera distance
+  NODE_COLOR: "#3b82f6",
+  NODE_SIZE: 2,
 };
 
 // Build node lookup by id
@@ -49,41 +37,45 @@ function getNamespacesAtDepth(depth: number): Map<string, typeof graphData.nodes
   return groups;
 }
 
-// Compute positions for groups in a horizontal line
-function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, spacing: number = 25) {
-  const result: Array<{
-    id: string;
-    position: { x: number; y: number; z: number };
-    count: number;
-    color: string;
-    file: string | null; // File path if this is a single-file namespace
-  }> = [];
+// Grid helper: get X position for an item at given index in a row of n items
+function gridX(index: number, totalItems: number): number {
+  const totalWidth = (totalItems - 1) * GRID.CELL_WIDTH;
+  const startX = -totalWidth / 2;
+  return startX + index * GRID.CELL_WIDTH;
+}
 
+// Grid helper: get position for grid cell
+function gridPosition(index: number, totalItems: number): { x: number; y: number; z: number } {
+  return { x: gridX(index, totalItems), y: 0, z: 0 };
+}
+
+// Compute positions for groups using grid system
+function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, currentDepth: number) {
   // Sort entries alphabetically by id
   const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  const numGroups = entries.length;
+  const totalItems = entries.length;
 
-  // Center the line around origin
-  const totalWidth = (numGroups - 1) * spacing;
-  const startX = -totalWidth / 2;
-
-  entries.forEach(([prefix, nodes], idx) => {
-    const x = startX + idx * spacing;
-
+  return entries.map(([prefix, nodes], idx) => {
     // Only show file if the group ID exactly matches a node ID (it's a leaf namespace)
     const exactMatch = nodes.find(n => n.id === prefix);
     const file = exactMatch ? (exactMatch as any).file || null : null;
 
-    result.push({
-      id: prefix,
-      position: { x, y: 0, z: 0 },
-      count: nodes.length,
-      color: "#3b82f6", // Same color for all
-      file,
-    });
-  });
+    // Get child namespaces (next level) for non-file nodes
+    const childGroups = getChildNamespaces(prefix, currentDepth + 1);
+    const childNamespaces = Array.from(childGroups.keys())
+      .filter(child => child !== prefix) // Exclude self
+      .sort()
+      .map(child => child.split('.').pop()!); // Just the last part of the namespace
 
-  return result;
+    return {
+      id: prefix,
+      position: gridPosition(idx, totalItems),
+      index: idx,
+      color: GRID.NODE_COLOR,
+      file,
+      childNamespaces,
+    };
+  });
 }
 
 // Get child namespaces of a given prefix
@@ -143,20 +135,18 @@ interface GroupNodeProps {
   onClick: () => void;
   file: string | null; // Single file for this namespace (if it's a real file)
   code: string | null; // Pre-loaded code content
+  childNamespaces: string[]; // Child namespace names for non-file nodes
 }
 
-function GroupNode({ id, position, color, isSelected, onClick, file, code }: GroupNodeProps) {
+function GroupNode({ id, position, color, isSelected, onClick, file, code, childNamespaces }: GroupNodeProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const size = 2; // Same size for all
 
   // Only show code panel if this namespace has a real file
   const hasFile = file && code;
 
-  // Bring selected node forward so it's not overlapped
-  const zOffset = isSelected ? 30 : 0;
-
   return (
-    <group position={[position.x, position.y, position.z + zOffset]}>
+    <group position={[position.x, position.y, position.z]}>
       <mesh ref={meshRef} onClick={onClick}>
         <sphereGeometry args={[size, 32, 32]} />
         <meshStandardMaterial
@@ -186,6 +176,24 @@ function GroupNode({ id, position, color, isSelected, onClick, file, code }: Gro
         >
           {file!.split("/").pop()}
         </Text>
+      )}
+
+      {/* Show child namespaces list below non-file nodes */}
+      {!hasFile && childNamespaces.length > 0 && (
+        <group position={[0, -size - 2, 0]}>
+          {childNamespaces.map((childNs, idx) => (
+            <Text
+              key={childNs}
+              position={[0, -idx * 1.8, 0]}
+              fontSize={1.2}
+              color="#94a3b8"
+              anchorX="center"
+              anchorY="middle"
+            >
+              {childNs}
+            </Text>
+          ))}
+        </group>
       )}
 
       {/* Show code panel below if this is a real file */}
@@ -235,6 +243,8 @@ interface SceneProps {
   fileContents: Map<string, string>; // Pre-loaded file contents
   cameraTarget: { x: number; y: number; z: number } | null;
   onCameraTargetChange: (target: { x: number; y: number; z: number } | null) => void;
+  selectedGroup: string | null;
+  onSelectedGroupChange: (group: string | null) => void;
 }
 
 // Camera controller that moves camera in front of target
@@ -253,14 +263,17 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
     const handleWheel = (e: WheelEvent) => {
       if (!controlsRef.current) return;
 
-      // Ctrl+scroll or pinch = zoom (let OrbitControls handle it)
+      // Prevent all zoom (ctrl+scroll, pinch, etc)
+      e.preventDefault();
+
+      // Ctrl+scroll = do nothing (no zoom)
       if (e.ctrlKey || e.metaKey) {
-        return; // Don't prevent default, let OrbitControls zoom
+        return;
       }
 
       // Regular scroll = pan
-      e.preventDefault();
-      const panSpeed = 0.5;
+      const panSpeedX = 0.5;
+      const panSpeedY = 0.15; // Slower vertical scroll for reading code
 
       // Get camera's right and up vectors for proper panning
       const right = new THREE.Vector3();
@@ -269,8 +282,8 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
 
       // When file is selected: only vertical scroll allowed
       // When no file selected: only horizontal scroll allowed
-      const deltaX = hasFileSelectedRef.current ? 0 : e.deltaX * panSpeed;
-      const deltaY = hasFileSelectedRef.current ? e.deltaY * panSpeed : 0;
+      const deltaX = hasFileSelectedRef.current ? 0 : e.deltaX * panSpeedX;
+      const deltaY = hasFileSelectedRef.current ? e.deltaY * panSpeedY : 0;
 
       camera.position.addScaledVector(right, deltaX);
       camera.position.addScaledVector(up, -deltaY);
@@ -305,9 +318,9 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
       const isXOnlyCenter = target.y === 0 && target.z === 0;
 
       if (isXOnlyCenter) {
-        // Only move X, keep current Y and Z positions
-        targetPos = new THREE.Vector3(target.x, controlsRef.current.target.y, controlsRef.current.target.z);
-        cameraPos = new THREE.Vector3(target.x, camera.position.y, camera.position.z);
+        // Only move X, keep camera at default Z distance looking at the circle
+        targetPos = new THREE.Vector3(target.x, 0, 0);
+        cameraPos = new THREE.Vector3(target.x, 0, GRID.CAMERA_Z);
       } else {
         targetPos = new THREE.Vector3(target.x, target.y, target.z);
 
@@ -322,13 +335,18 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
     } else {
       // Reset to original camera position - directly in front of the circles
       targetPos = new THREE.Vector3(0, 0, 0);
-      cameraPos = new THREE.Vector3(0, 0, 100);
+      cameraPos = new THREE.Vector3(0, 0, GRID.CAMERA_Z);
     }
 
     // Animate camera to new position
     const startPos = camera.position.clone();
     const startTarget = controlsRef.current.target.clone();
     let progress = 0;
+
+    console.log('Camera animation:', {
+      from: { pos: startPos.toArray(), target: startTarget.toArray() },
+      to: { pos: cameraPos.toArray(), target: targetPos.toArray() }
+    });
 
     const animate = () => {
       progress += 0.05;
@@ -361,9 +379,10 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
       makeDefault
       enablePan={true}
       enableZoom={false}
+      enableRotate={false}
       screenSpacePanning={true}
       mouseButtons={{
-        LEFT: THREE.MOUSE.ROTATE,
+        LEFT: THREE.MOUSE.PAN,
         MIDDLE: THREE.MOUSE.PAN,
         RIGHT: THREE.MOUSE.PAN
       }}
@@ -371,7 +390,7 @@ function CameraController({ target, panelWidth, hasFileSelected }: { target: { x
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange }: SceneProps) {
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
 
@@ -384,8 +403,8 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
   }, [currentPath, prefix, depth]);
 
   const groupNodes = useMemo(() => {
-    return computeGroupPositions(groups, 40);
-  }, [groups]);
+    return computeGroupPositions(groups, depth);
+  }, [groups, depth]);
 
   const nodePositions = useMemo(() => {
     const map = new Map<string, { x: number; y: number; z: number }>();
@@ -396,8 +415,6 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
   const edges = useMemo(() => {
     return getEdgesBetweenGroups(groupNodes.map((g) => g.id));
   }, [groupNodes]);
-
-  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
 
   const handleClick = useCallback((groupId: string, position: { x: number; y: number; z: number }, hasFile: boolean) => {
     const childGroups = getChildNamespaces(groupId, depth + 1);
@@ -411,9 +428,9 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
     } else {
       // For file nodes, center on the full position
       onCameraTargetChange(position);
-      setSelectedGroup(selectedGroup === groupId ? null : groupId);
+      onSelectedGroupChange(selectedGroup === groupId ? null : groupId);
     }
-  }, [currentPath, depth, onNavigate, selectedGroup, onCameraTargetChange]);
+  }, [currentPath, depth, onNavigate, selectedGroup, onCameraTargetChange, onSelectedGroupChange]);
 
   return (
     <>
@@ -423,9 +440,6 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
 
       {/* Axis helper - Red=X, Green=Y, Blue=Z */}
       <axesHelper args={[100]} />
-
-      {/* Grid on XZ plane */}
-      <gridHelper args={[200, 20, "#444444", "#222222"]} />
 
       <group>
         <GroupEdges edges={edges} nodePositions={nodePositions} />
@@ -440,6 +454,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
             onClick={() => handleClick(group.id, group.position, group.file !== null)}
             file={group.file}
             code={group.file ? fileContents.get(group.file) || null : null}
+            childNamespaces={group.childNamespaces}
           />
         ))}
       </group>
@@ -718,6 +733,7 @@ export default function App() {
   }, []);
 
   const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
 
   const handleNavigate = useCallback((path: string[]) => {
     setCurrentPath(path);
@@ -725,6 +741,10 @@ export default function App() {
 
   const handleCameraTargetChange = useCallback((target: { x: number; y: number; z: number } | null) => {
     setCameraTarget(target);
+  }, []);
+
+  const handleSelectedGroupChange = useCallback((group: string | null) => {
+    setSelectedGroup(group);
   }, []);
 
 
@@ -740,17 +760,15 @@ export default function App() {
       groups = getChildNamespaces(prefix, depth);
     }
 
-    // Compute positions for these groups (same logic as computeGroupPositions)
-    const entries = Array.from(groups.entries());
-    const numGroups = entries.length;
-    const spacing = 25;
-    const totalWidth = (numGroups - 1) * spacing;
-    const startX = -totalWidth / 2;
+    // Use grid system for positions (same as computeGroupPositions)
+    const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    const totalItems = entries.length;
 
-    return entries.map(([nsPrefix], idx) => {
-      const x = startX + idx * spacing;
-      return { id: nsPrefix, position: { x, y: 0, z: 0 } };
-    });
+    return entries.map(([nsPrefix], idx) => ({
+      id: nsPrefix,
+      index: idx,
+      position: gridPosition(idx, totalItems),
+    }));
   }, [currentPath]);
 
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -764,8 +782,13 @@ export default function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        // Reset camera to original position
+        // Go back one level and reset selection
+        if (currentPath.length > 0) {
+          setCurrentPath(currentPath.slice(0, -1));
+        }
         setCameraTarget(null);
+        setSelectedGroup(null);
+        setSelectedIndex(0);
       } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         const visibleNodes = getVisibleNamespacesWithPositions();
         if (visibleNodes.length === 0) return;
@@ -779,15 +802,24 @@ export default function App() {
 
         setSelectedIndex(newIndex);
 
-        // Set camera target to the selected node's position
+        // Set camera target to the selected node's position and select the node
         const node = visibleNodes[newIndex];
+        console.log('Arrow key navigation:', { newIndex, nodeId: node.id, position: node.position });
         setCameraTarget(node.position);
+        setSelectedGroup(node.id);
+      } else if (e.key === " " && selectedGroup) {
+        // Space = enter the selected namespace
+        e.preventDefault();
+        const lastPart = selectedGroup.split(".").pop()!;
+        setCurrentPath([...currentPath, lastPart]);
+        setSelectedGroup(null);
+        setSelectedIndex(0);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex]);
+  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup]);
 
   return (
     <div
@@ -858,13 +890,15 @@ export default function App() {
         </div>
       )}
 
-      <Canvas camera={{ position: [0, 0, 100], fov: 50 }}>
+      <Canvas camera={{ position: [0, 0, GRID.CAMERA_Z], fov: 50 }}>
         <Scene
           currentPath={currentPath}
           onNavigate={handleNavigate}
           fileContents={fileContents}
           cameraTarget={cameraTarget}
           onCameraTargetChange={handleCameraTargetChange}
+          selectedGroup={selectedGroup}
+          onSelectedGroupChange={handleSelectedGroupChange}
         />
       </Canvas>
     </div>
