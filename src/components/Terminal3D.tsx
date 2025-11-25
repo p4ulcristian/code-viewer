@@ -7,57 +7,60 @@ import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 
 interface Terminal3DProps {
+  id: string;
   position?: [number, number, number];
   viewportWidth?: number;
   viewportHeight?: number;
   wsUrl?: string;
   cwd?: string;
+  onFocus?: () => void;
 }
 
-// Singleton state to keep terminal alive across component remounts
-const terminalState = {
-  initialized: false,
-  container: null as HTMLDivElement | null,
-  terminal: null as Terminal | null,
-  ws: null as WebSocket | null,
-  renderCanvas: null as HTMLCanvasElement | null,
-  currentCwd: null as string | null,
-};
+// Store for multiple terminal instances
+const terminalInstances = new Map<string, {
+  container: HTMLDivElement;
+  terminal: Terminal;
+  ws: WebSocket;
+  renderCanvas: HTMLCanvasElement;
+}>();
 
 export function Terminal3D({
+  id,
   position = [0, 0, 0],
   viewportWidth = 30,
   viewportHeight = 20,
   wsUrl = 'ws://localhost:8765',
   cwd,
+  onFocus,
 }: Terminal3DProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const materialRef = useRef<THREE.MeshBasicMaterial>(null);
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
   const [textureReady, setTextureReady] = useState(false);
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number } | null>(null);
+  const instanceRef = useRef<typeof terminalInstances extends Map<string, infer V> ? V : never>(null);
 
   useEffect(() => {
-    console.log('[Terminal3D] Mounting, initialized:', terminalState.initialized);
+    console.log(`[Terminal3D:${id}] Mounting`);
 
-    // If already initialized, just reuse existing terminal
-    if (terminalState.initialized && terminalState.container && terminalState.terminal) {
-      console.log('[Terminal3D] Reusing existing terminal');
+    // Check if instance already exists
+    const existing = terminalInstances.get(id);
+    if (existing) {
+      console.log(`[Terminal3D:${id}] Reusing existing terminal`);
+      instanceRef.current = existing;
 
       // Create texture from existing render canvas
-      if (terminalState.renderCanvas) {
-        const tex = new THREE.CanvasTexture(terminalState.renderCanvas);
-        tex.minFilter = THREE.LinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        tex.generateMipmaps = false;
-        textureRef.current = tex;
-        setTextureReady(true);
-        setCanvasSize({ width: terminalState.renderCanvas.width, height: terminalState.renderCanvas.height });
-      }
+      const tex = new THREE.CanvasTexture(existing.renderCanvas);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      textureRef.current = tex;
+      setTextureReady(true);
+      setCanvasSize({ width: existing.renderCanvas.width, height: existing.renderCanvas.height });
 
       // Focus terminal
       setTimeout(() => {
-        const textarea = terminalState.container?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
+        const textarea = existing.container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
         if (textarea) {
           textarea.style.pointerEvents = 'auto';
           textarea.focus();
@@ -65,24 +68,20 @@ export function Terminal3D({
       }, 100);
 
       return () => {
-        console.log('[Terminal3D] Unmounting (keeping terminal alive)');
+        console.log(`[Terminal3D:${id}] Unmounting (keeping terminal alive)`);
       };
     }
 
-    // First time initialization
-    terminalState.initialized = true;
-    terminalState.currentCwd = cwd || null;
-    console.log('[Terminal3D] Creating new terminal, cwd:', cwd);
+    // First time initialization for this ID
+    console.log(`[Terminal3D:${id}] Creating new terminal, cwd:`, cwd);
 
     // Terminal dimensions - these need to match PTY server
     const cols = 160;
     const rows = 50;
     const fontSize = 16;
-    // Calculate container size based on terminal dimensions
-    // Character cell is approximately fontSize * 0.6 wide and fontSize * 1.2 tall
     const charWidth = fontSize * 0.6;
     const charHeight = fontSize * 1.2;
-    const containerWidth = Math.ceil(cols * charWidth) + 40; // +40 for scrollbar and padding
+    const containerWidth = Math.ceil(cols * charWidth) + 40;
     const containerHeight = Math.ceil(rows * charHeight) + 20;
 
     // Create container for xterm
@@ -96,8 +95,8 @@ export function Terminal3D({
     container.style.pointerEvents = 'none';
     container.style.opacity = '0.01';
     container.style.zIndex = '-1';
+    container.dataset.terminalId = id;
     document.body.appendChild(container);
-    terminalState.container = container;
 
     const term = new Terminal({
       theme: {
@@ -133,8 +132,6 @@ export function Terminal3D({
       rows,
     });
 
-    terminalState.terminal = term;
-
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
 
@@ -153,7 +150,6 @@ export function Terminal3D({
         const renderCanvas = document.createElement('canvas');
         renderCanvas.width = firstCanvas.width;
         renderCanvas.height = firstCanvas.height;
-        terminalState.renderCanvas = renderCanvas;
 
         const tex = new THREE.CanvasTexture(renderCanvas);
         tex.minFilter = THREE.LinearFilter;
@@ -162,7 +158,13 @@ export function Terminal3D({
         textureRef.current = tex;
         setTextureReady(true);
         setCanvasSize({ width: firstCanvas.width, height: firstCanvas.height });
-        console.log('[Terminal3D] Texture ready:', renderCanvas.width, 'x', renderCanvas.height);
+
+        // Store the instance
+        const instance = { container, terminal: term, ws: ws!, renderCanvas };
+        terminalInstances.set(id, instance);
+        instanceRef.current = instance;
+
+        console.log(`[Terminal3D:${id}] Texture ready:`, renderCanvas.width, 'x', renderCanvas.height);
         return true;
       }
       return false;
@@ -178,10 +180,9 @@ export function Terminal3D({
     // Connect WebSocket with cwd parameter
     const wsUrlWithCwd = cwd ? `${wsUrl}?cwd=${encodeURIComponent(cwd)}` : wsUrl;
     const ws = new WebSocket(wsUrlWithCwd);
-    terminalState.ws = ws;
 
     ws.onopen = () => {
-      console.log('[Terminal3D] WebSocket connected');
+      console.log(`[Terminal3D:${id}] WebSocket connected`);
       term.write('\x1b[2K\rConnected!\r\n');
       ws.send(`\x1b[8;${rows};${cols}t`);
       setTimeout(() => {
@@ -202,7 +203,7 @@ export function Terminal3D({
     };
 
     ws.onclose = () => {
-      console.log('[Terminal3D] WebSocket closed');
+      console.log(`[Terminal3D:${id}] WebSocket closed`);
     };
 
     term.onData((data) => {
@@ -211,22 +212,26 @@ export function Terminal3D({
       }
     });
 
+    // Temporarily store before texture is ready
+    const tempInstance = { container, terminal: term, ws, renderCanvas: null as any };
+    instanceRef.current = tempInstance as any;
+
     return () => {
-      console.log('[Terminal3D] Unmounting (keeping terminal alive)');
-      // Don't cleanup - keep terminal alive for next mount
+      console.log(`[Terminal3D:${id}] Unmounting (keeping terminal alive)`);
     };
-  }, [wsUrl, cwd]);
+  }, [id, wsUrl, cwd]);
 
   // Update texture every frame
   useFrame(() => {
-    if (!materialRef.current || !terminalState.renderCanvas || !terminalState.container || !textureRef.current) return;
+    const instance = instanceRef.current;
+    if (!materialRef.current || !instance?.renderCanvas || !instance?.container || !textureRef.current) return;
 
-    const ctx = terminalState.renderCanvas.getContext('2d');
+    const ctx = instance.renderCanvas.getContext('2d');
     if (ctx) {
       ctx.fillStyle = '#1a1a2e';
-      ctx.fillRect(0, 0, terminalState.renderCanvas.width, terminalState.renderCanvas.height);
+      ctx.fillRect(0, 0, instance.renderCanvas.width, instance.renderCanvas.height);
 
-      const canvases = terminalState.container.querySelectorAll('.xterm-screen canvas');
+      const canvases = instance.container.querySelectorAll('.xterm-screen canvas');
       canvases.forEach((canvas) => {
         const c = canvas as HTMLCanvasElement;
         if (c.width > 0 && c.height > 0) {
@@ -246,15 +251,17 @@ export function Terminal3D({
 
   const handlePointerDown = useCallback((e: any) => {
     e.stopPropagation();
+    onFocus?.();
     setTimeout(() => {
-      const textarea = terminalState.container?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
+      const instance = instanceRef.current;
+      const textarea = instance?.container?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
       if (textarea) {
         textarea.style.pointerEvents = 'auto';
         textarea.focus();
-        console.log('[Terminal3D] Focused terminal');
+        console.log(`[Terminal3D:${id}] Focused terminal`);
       }
     }, 10);
-  }, []);
+  }, [id, onFocus]);
 
   // Calculate plane dimensions to fit viewport while preserving aspect ratio
   const paddingFactor = 0.9;
@@ -266,11 +273,9 @@ export function Terminal3D({
     const viewportAspect = viewportWidth / viewportHeight;
 
     if (canvasAspect > viewportAspect) {
-      // Canvas is wider than viewport - fit to width
       planeWidth = viewportWidth * paddingFactor;
       planeHeight = planeWidth / canvasAspect;
     } else {
-      // Canvas is taller than viewport - fit to height
       planeHeight = viewportHeight * paddingFactor;
       planeWidth = planeHeight * canvasAspect;
     }
@@ -287,4 +292,16 @@ export function Terminal3D({
       </mesh>
     </group>
   );
+}
+
+// Export function to focus a specific terminal
+export function focusTerminal(id: string) {
+  const instance = terminalInstances.get(id);
+  if (instance) {
+    const textarea = instance.container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
+    if (textarea) {
+      textarea.style.pointerEvents = 'auto';
+      textarea.focus();
+    }
+  }
 }

@@ -3,7 +3,7 @@ import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import { OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { graphData } from "./graph-data";
-import { Terminal3D } from "./components/Terminal3D";
+import { Terminal3D, focusTerminal } from "./components/Terminal3D";
 import { ProjectSetup } from "./components/ProjectSetup";
 
 const STORAGE_KEY = 'ns-visualizer-project-path';
@@ -259,6 +259,12 @@ interface SceneProps {
   onPanelViewChange: (isPanelView: boolean) => void;
   showTerminal: boolean;
   projectPath: string | null;
+  terminals: string[]; // List of terminal IDs
+  activeTerminal: number; // Index of active terminal
+  onAddTerminal: () => void;
+  onSelectTerminal: (index: number) => void;
+  onCloseTerminal: (index: number) => void;
+  onTerminalSpacingChange: (spacing: number) => void;
 }
 
 // Camera controller that moves camera in front of target
@@ -424,7 +430,102 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds }:
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, projectPath }: SceneProps) {
+// 3D Terminal button component with hover and active animations
+function TerminalButton({
+  position,
+  onClick,
+  isActive,
+  isAddButton = false,
+  isCloseButton = false,
+  children
+}: {
+  position: [number, number, number];
+  onClick: () => void;
+  isActive: boolean;
+  isAddButton?: boolean;
+  isCloseButton?: boolean;
+  children: React.ReactNode;
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const [hovered, setHovered] = useState(false);
+
+  // Animate the button - swing rotation for active
+  useFrame((state) => {
+    if (!groupRef.current) return;
+
+    if (isActive) {
+      // Gentle swing animation (rotate around Y axis)
+      groupRef.current.rotation.y = Math.sin(state.clock.elapsedTime * 2) * 0.15;
+    } else {
+      // Reset rotation when not active
+      groupRef.current.rotation.y *= 0.9;
+    }
+
+    // Scale on hover
+    const targetScale = hovered ? 1.15 : 1;
+    groupRef.current.scale.setScalar(
+      groupRef.current.scale.x + (targetScale - groupRef.current.scale.x) * 0.1
+    );
+  });
+
+  const baseColor = isCloseButton ? "#ef4444" : (isAddButton ? "#10b981" : (isActive ? "#3b82f6" : "#4b5563"));
+  const edgeColor = isCloseButton ? "#b91c1c" : (isAddButton ? "#059669" : (isActive ? "#1d4ed8" : "#1f2937"));
+
+  return (
+    <group position={position}>
+      <group ref={groupRef}>
+        {/* Main button face */}
+        <mesh
+          position={[0, 0, 0.1]}
+          onClick={(e) => { e.stopPropagation(); onClick(); }}
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
+        >
+          <boxGeometry args={[0.85, 0.85, 0.08]} />
+          <meshStandardMaterial
+            color={baseColor}
+            emissive={baseColor}
+            emissiveIntensity={isActive ? 0.3 : (hovered ? 0.2 : 0.1)}
+            metalness={0.2}
+            roughness={0.5}
+          />
+        </mesh>
+        {/* Darker edge/frame */}
+        <mesh
+          position={[0, 0, 0]}
+          onClick={(e) => { e.stopPropagation(); onClick(); }}
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
+        >
+          <boxGeometry args={[0.95, 0.95, 0.15]} />
+          <meshStandardMaterial
+            color={edgeColor}
+            metalness={0.4}
+            roughness={0.3}
+          />
+        </mesh>
+        {/* Text on front face - always visible */}
+        <Text
+          position={[0, 0, 0.15]}
+          fontSize={0.35}
+          color="white"
+          anchorX="center"
+          anchorY="middle"
+          outlineWidth={0.02}
+          outlineColor="#000000"
+        >
+          {children}
+        </Text>
+        {/* Glow indicator for active button */}
+        {isActive && (
+          <pointLight position={[0, 0, 0.3]} intensity={0.5} distance={2} color="#60a5fa" />
+        )}
+      </group>
+    </group>
+  );
+}
+
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange }: SceneProps) {
   const { camera, size } = useThree();
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
@@ -441,6 +542,12 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
   // Viewport dimensions at that distance
   const terminalViewportHeight = 2 * Math.tan(vFov / 2) * terminalCameraDistance;
   const terminalViewportWidth = terminalViewportHeight * aspect;
+
+  // Report terminal spacing to parent
+  const calculatedTerminalSpacing = terminalViewportHeight + 5;
+  useEffect(() => {
+    onTerminalSpacingChange(calculatedTerminalSpacing);
+  }, [calculatedTerminalSpacing, onTerminalSpacingChange]);
 
   const groups = useMemo(() => {
     if (currentPath.length === 0) {
@@ -557,15 +664,93 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         scrollBounds={scrollBounds}
       />
 
-      {/* Terminal panel - positioned to match TERMINAL_POSITION target */}
-      {showTerminal && (
-        <Terminal3D
-          position={[-80, 0, 30]}
-          viewportWidth={terminalViewportWidth}
-          viewportHeight={terminalViewportHeight}
-          cwd={projectPath ?? undefined}
-        />
-      )}
+      {/* Terminal panels - each positioned below the previous one */}
+      {showTerminal && terminals.map((terminalId, index) => {
+        const TERMINAL_SPACING = terminalViewportHeight + 5;
+        const yPosition = -index * TERMINAL_SPACING;
+        return (
+          <Terminal3D
+            key={terminalId}
+            id={terminalId}
+            position={[-80, yPosition, 30]}
+            viewportWidth={terminalViewportWidth}
+            viewportHeight={terminalViewportHeight}
+            cwd={projectPath ?? undefined}
+            onFocus={() => onSelectTerminal(index)}
+          />
+        );
+      })}
+
+      {/* Terminal navigation buttons - horizontal, above the terminal */}
+      {showTerminal && (() => {
+        const TERMINAL_SPACING = terminalViewportHeight + 5;
+        const activeY = -activeTerminal * TERMINAL_SPACING;
+
+        // Calculate actual terminal plane dimensions (matching Terminal3D logic)
+        // Terminal canvas: 160 cols * 9.6px wide, 50 rows * 19.2px tall (fontSize 16)
+        const terminalCanvasWidth = 160 * 9.6 + 40; // cols * charWidth + padding
+        const terminalCanvasHeight = 50 * 19.2 + 20; // rows * charHeight + padding
+        const canvasAspect = terminalCanvasWidth / terminalCanvasHeight;
+        const viewportAspect = terminalViewportWidth / terminalViewportHeight;
+        const paddingFactor = 0.9;
+
+        let actualPlaneWidth: number;
+        let actualPlaneHeight: number;
+        if (canvasAspect > viewportAspect) {
+          actualPlaneWidth = terminalViewportWidth * paddingFactor;
+          actualPlaneHeight = actualPlaneWidth / canvasAspect;
+        } else {
+          actualPlaneHeight = terminalViewportHeight * paddingFactor;
+          actualPlaneWidth = actualPlaneHeight * canvasAspect;
+        }
+
+        // Position above terminal
+        const topY = actualPlaneHeight / 2 + 1.2;
+        // Align to left edge of terminal
+        const terminalLeftEdge = -80 - actualPlaneWidth / 2 + 0.5;
+
+        return (
+          <group position={[terminalLeftEdge, activeY + topY, 30]}>
+            {/* Add terminal button */}
+            <TerminalButton
+              position={[0, 0, 0]}
+              onClick={onAddTerminal}
+              isActive={false}
+              isAddButton
+            >
+              +
+            </TerminalButton>
+
+            {/* Terminal number buttons - horizontal row */}
+            {terminals.map((_, index) => {
+              const xPosition = (index + 1) * 1.2;
+              const isActive = index === activeTerminal;
+              return (
+                <TerminalButton
+                  key={index}
+                  position={[xPosition, 0, 0]}
+                  onClick={() => onSelectTerminal(index)}
+                  isActive={isActive}
+                >
+                  {index + 1}
+                </TerminalButton>
+              );
+            })}
+
+            {/* Close button - on the right side, only if more than 1 terminal */}
+            {terminals.length > 1 && (
+              <TerminalButton
+                position={[actualPlaneWidth - 1, 0, 0]}
+                onClick={() => onCloseTerminal(activeTerminal)}
+                isActive={false}
+                isCloseButton
+              >
+                ×
+              </TerminalButton>
+            )}
+          </group>
+        );
+      })()}
     </>
   );
 }
@@ -899,24 +1084,66 @@ export default function App() {
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [isPanelView, setIsPanelView] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [terminals, setTerminals] = useState<string[]>(['terminal-1']);
+  const [activeTerminal, setActiveTerminal] = useState(0);
+  const terminalCounterRef = useRef(1);
   const prevCameraTargetRef = useRef<{ x: number; y: number; z: number } | null>(null);
 
-  // Terminal position (same as in Scene) - z is set to trigger close camera view
-  const TERMINAL_POSITION = { x: -80, y: 0, z: 30 };
+  // Terminal base position - z is set to trigger close camera view
+  const TERMINAL_BASE_POSITION = { x: -80, y: 0, z: 30 };
+  // Terminal spacing - will be set by Scene component
+  const [terminalSpacing, setTerminalSpacing] = useState(25);
+
+  const getTerminalPosition = useCallback((index: number) => ({
+    x: TERMINAL_BASE_POSITION.x,
+    y: -index * terminalSpacing,
+    z: TERMINAL_BASE_POSITION.z,
+  }), [terminalSpacing]);
 
   const toggleTerminal = useCallback(() => {
     setShowTerminal(prev => {
       if (!prev) {
-        // Opening terminal - save current camera and focus on terminal
+        // Opening terminal - save current camera and focus on active terminal
         prevCameraTargetRef.current = cameraTarget;
-        setCameraTarget(TERMINAL_POSITION);
+        setCameraTarget(getTerminalPosition(activeTerminal));
       } else {
         // Closing terminal - restore previous camera
         setCameraTarget(prevCameraTargetRef.current);
       }
       return !prev;
     });
-  }, [cameraTarget]);
+  }, [cameraTarget, activeTerminal, getTerminalPosition]);
+
+  const handleAddTerminal = useCallback(() => {
+    terminalCounterRef.current += 1;
+    const newId = `terminal-${terminalCounterRef.current}`;
+    setTerminals(prev => [...prev, newId]);
+    const newIndex = terminals.length;
+    setActiveTerminal(newIndex);
+    setCameraTarget(getTerminalPosition(newIndex));
+    // Focus the new terminal after a short delay
+    setTimeout(() => focusTerminal(newId), 200);
+  }, [terminals.length, getTerminalPosition]);
+
+  const handleSelectTerminal = useCallback((index: number) => {
+    setActiveTerminal(index);
+    setCameraTarget(getTerminalPosition(index));
+    // Focus the selected terminal
+    setTimeout(() => focusTerminal(terminals[index]), 100);
+  }, [terminals, getTerminalPosition]);
+
+  const handleCloseTerminal = useCallback((index: number) => {
+    if (terminals.length <= 1) return; // Don't close the last terminal
+
+    setTerminals(prev => prev.filter((_, i) => i !== index));
+
+    // Adjust active terminal if needed
+    if (index <= activeTerminal) {
+      const newActive = Math.max(0, activeTerminal - 1);
+      setActiveTerminal(newActive);
+      setCameraTarget(getTerminalPosition(newActive));
+    }
+  }, [terminals.length, activeTerminal, getTerminalPosition]);
 
   const handleNavigate = useCallback((path: string[]) => {
     setCurrentPath(path);
@@ -1118,6 +1345,12 @@ export default function App() {
           onPanelViewChange={handlePanelViewChange}
           showTerminal={showTerminal}
           projectPath={projectPath}
+          terminals={terminals}
+          activeTerminal={activeTerminal}
+          onAddTerminal={handleAddTerminal}
+          onSelectTerminal={handleSelectTerminal}
+          onCloseTerminal={handleCloseTerminal}
+          onTerminalSpacingChange={setTerminalSpacing}
         />
       </Canvas>
 
