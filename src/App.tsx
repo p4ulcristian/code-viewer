@@ -52,10 +52,9 @@ function gridPosition(index: number): { x: number; y: number; z: number } {
 }
 
 // Compute positions for groups using grid system
-function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, currentDepth: number) {
+function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, currentDepth: number, parentPrefix: string) {
   // Sort entries alphabetically by id
   const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  const totalItems = entries.length;
 
   return entries.map(([prefix, nodes], idx) => {
     // Only show file if the group ID exactly matches a node ID (it's a leaf namespace)
@@ -67,10 +66,16 @@ function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, curr
     const childNamespaces = Array.from(childGroups.keys())
       .filter(child => child !== prefix) // Exclude self
       .sort()
-      .map(child => child.split('.').pop()!); // Just the last part of the namespace
+      .map(child => child.startsWith(prefix + '.') ? child.slice(prefix.length + 1) : child); // Remaining part after prefix
+
+    // Display name: remaining part after parent prefix
+    const displayName = parentPrefix && prefix.startsWith(parentPrefix + '.')
+      ? prefix.slice(parentPrefix.length + 1)
+      : prefix;
 
     return {
       id: prefix,
+      displayName,
       position: gridPosition(idx),
       index: idx,
       color: GRID.NODE_COLOR,
@@ -131,6 +136,7 @@ function getEdgesBetweenGroups(groups: string[]): Array<{ source: string; target
 
 interface GroupNodeProps {
   id: string;
+  displayName: string; // Name to display (remaining part of namespace)
   position: { x: number; y: number; z: number };
   color: string;
   isSelected: boolean;
@@ -141,7 +147,7 @@ interface GroupNodeProps {
   onPanelClick: (panelCenter: { x: number; y: number; z: number }, panelWidth: number) => void;
 }
 
-function GroupNode({ id, position, color, isSelected, onClick, file, code, childNamespaces, onPanelClick }: GroupNodeProps) {
+function GroupNode({ id, displayName, position, color, isSelected, onClick, file, code, childNamespaces, onPanelClick }: GroupNodeProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const size = 2; // Same size for all
 
@@ -167,7 +173,7 @@ function GroupNode({ id, position, color, isSelected, onClick, file, code, child
         outlineWidth={0.1}
         outlineColor="#000000"
       >
-        {id}
+        {displayName}
       </Text>
       {hasFile && (
         <Text
@@ -449,8 +455,8 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
   }, [currentPath, prefix, depth]);
 
   const groupNodes = useMemo(() => {
-    return computeGroupPositions(groups, depth);
-  }, [groups, depth]);
+    return computeGroupPositions(groups, depth, prefix);
+  }, [groups, depth, prefix]);
 
   const nodePositions = useMemo(() => {
     const map = new Map<string, { x: number; y: number; z: number }>();
@@ -537,6 +543,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
           <GroupNode
             key={group.id}
             id={group.id}
+            displayName={group.displayName}
             position={group.position}
             color={group.color}
             isSelected={selectedGroup === group.id}
@@ -958,13 +965,26 @@ export default function App() {
   }, [currentPath]);
 
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Stack to remember selection index at each navigation level
+  const selectionStackRef = useRef<number[]>([]);
 
-  // Select first node when path changes
+  // Select first node when path changes (or restore previous selection when going back)
   useEffect(() => {
-    setSelectedIndex(0);
     const visibleNodes = getVisibleNamespacesWithPositions();
     if (visibleNodes.length > 0) {
-      setSelectedGroup(visibleNodes[0].id);
+      // Check if we have a stored selection for this level (means we're going back)
+      const storedIndex = selectionStackRef.current[currentPath.length];
+      if (storedIndex !== undefined && storedIndex < visibleNodes.length) {
+        setSelectedIndex(storedIndex);
+        setSelectedGroup(visibleNodes[storedIndex].id);
+        // Move camera to the restored selection
+        setCameraTarget(visibleNodes[storedIndex].position);
+        // Clear any stored indices beyond current level
+        selectionStackRef.current = selectionStackRef.current.slice(0, currentPath.length);
+      } else {
+        setSelectedIndex(0);
+        setSelectedGroup(visibleNodes[0].id);
+      }
     }
   }, [currentPath, getVisibleNamespacesWithPositions]);
 
@@ -989,13 +1009,13 @@ export default function App() {
       }
 
       if (e.key === "Escape") {
-        // Go back one level and reset selection
+        // Go back one level - selection will be restored from stack by useEffect
         if (currentPath.length > 0) {
           setCurrentPath(currentPath.slice(0, -1));
         }
         setCameraTarget(null);
         setSelectedGroup(null);
-        setSelectedIndex(0);
+        // Don't reset selectedIndex here - useEffect will restore from stack
       } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         // In panel view, scroll up/down
         if (isPanelView && cameraTarget) {
@@ -1039,6 +1059,8 @@ export default function App() {
 
         if (hasChildren) {
           // Space = enter the selected namespace (only if not a file)
+          // Save current selection index before navigating
+          selectionStackRef.current[currentPath.length] = selectedIndex;
           const lastPart = selectedGroup.split(".").pop()!;
           setCurrentPath([...currentPath, lastPart]);
           setSelectedGroup(null);
@@ -1073,78 +1095,6 @@ export default function App() {
     <div
       style={{ width: "100vw", height: "100vh", background: "#0f172a" }}
     >
-      {/* Breadcrumb */}
-      <div
-        style={{
-          position: "absolute",
-          top: "16px",
-          left: "16px",
-          zIndex: 1000,
-          display: "flex",
-          alignItems: "center",
-          gap: "4px",
-          fontSize: "12px",
-          flexWrap: "wrap",
-        }}
-      >
-        <button
-          onClick={() => setCurrentPath([])}
-          style={{
-            background: currentPath.length === 0 ? "#3b82f6" : "rgba(255,255,255,0.1)",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            padding: "6px 10px",
-            cursor: "pointer",
-            fontSize: "12px",
-          }}
-        >
-          root
-        </button>
-        {currentPath.map((part, idx) => (
-          <span key={idx} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-            <span style={{ color: "#64748b" }}>/</span>
-            <button
-              onClick={() => setCurrentPath(currentPath.slice(0, idx + 1))}
-              style={{
-                background: idx === currentPath.length - 1 ? "#3b82f6" : "rgba(255,255,255,0.1)",
-                color: "white",
-                border: "none",
-                borderRadius: "4px",
-                padding: "6px 10px",
-                cursor: "pointer",
-                fontSize: "12px",
-              }}
-            >
-              {part}
-            </button>
-          </span>
-        ))}
-      </div>
-
-      {/* Terminal toggle button */}
-      <button
-        onClick={toggleTerminal}
-        style={{
-          position: "absolute",
-          top: "16px",
-          right: "16px",
-          zIndex: 1000,
-          background: showTerminal ? "#3b82f6" : "rgba(255,255,255,0.1)",
-          color: "white",
-          border: "none",
-          borderRadius: "4px",
-          padding: "6px 12px",
-          cursor: "pointer",
-          fontSize: "12px",
-          display: "flex",
-          alignItems: "center",
-          gap: "6px",
-        }}
-      >
-        <span style={{ fontFamily: "monospace" }}>&gt;_</span>
-        Terminal
-      </button>
 
       {loading && (
         <div style={{
@@ -1178,75 +1128,122 @@ export default function App() {
         />
       </Canvas>
 
-      {/* Project path display and change button */}
-      {projectPath && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: "16px",
-            left: "16px",
-            zIndex: 1000,
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-          }}
-        >
-          <span style={{ color: "#64748b", fontSize: "12px", fontFamily: "monospace" }}>
-            {projectPath}
-          </span>
-          <button
-            onClick={() => setShowProjectSetup(true)}
-            style={{
-              background: "rgba(255,255,255,0.1)",
-              color: "white",
-              border: "none",
-              borderRadius: "4px",
-              padding: "4px 8px",
-              cursor: "pointer",
-              fontSize: "11px",
-            }}
-          >
-            Change
-          </button>
-        </div>
-      )}
-
-      {/* clj-kondo status indicator */}
+      {/* Bottom bar with all controls */}
       <div
         style={{
           position: "absolute",
-          bottom: "16px",
-          right: "16px",
+          bottom: 0,
+          left: 0,
+          right: 0,
           zIndex: 1000,
           display: "flex",
           alignItems: "center",
-          gap: "8px",
-          padding: "6px 12px",
-          background: "rgba(0,0,0,0.6)",
-          borderRadius: "4px",
-          fontSize: "12px",
+          gap: "16px",
+          padding: "12px 16px",
+          background: "rgba(0,0,0,0.7)",
+          borderTop: "1px solid rgba(255,255,255,0.1)",
         }}
       >
-        {kondoRunning ? (
-          <span style={{ color: "#fbbf24" }}>clj-kondo running...</span>
-        ) : kondoResults ? (
-          <>
-            <span style={{ color: kondoResults.summary?.error > 0 ? "#f87171" : kondoResults.summary?.warning > 0 ? "#fbbf24" : "#4ade80" }}>
-              clj-kondo:
+        {/* Project button */}
+        <button
+          onClick={() => setShowProjectSetup(true)}
+          style={{
+            background: "rgba(255,255,255,0.1)",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            padding: "6px 12px",
+            cursor: "pointer",
+            fontSize: "12px",
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+          }}
+        >
+          <span>📁</span>
+          Project
+        </button>
+
+        {/* Breadcrumb */}
+        <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", flex: 1 }}>
+          <button
+            onClick={() => setCurrentPath([])}
+            style={{
+              background: currentPath.length === 0 ? "#3b82f6" : "rgba(255,255,255,0.1)",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              padding: "6px 10px",
+              cursor: "pointer",
+              fontSize: "12px",
+            }}
+          >
+            root
+          </button>
+          {currentPath.map((part, idx) => (
+            <span key={idx} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+              <span style={{ color: "#64748b" }}>/</span>
+              <button
+                onClick={() => setCurrentPath(currentPath.slice(0, idx + 1))}
+                style={{
+                  background: idx === currentPath.length - 1 ? "#3b82f6" : "rgba(255,255,255,0.1)",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "4px",
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  fontSize: "12px",
+                }}
+              >
+                {part}
+              </button>
             </span>
-            {kondoResults.summary?.error > 0 && (
-              <span style={{ color: "#f87171" }}>{kondoResults.summary.error} errors</span>
-            )}
-            {kondoResults.summary?.warning > 0 && (
-              <span style={{ color: "#fbbf24" }}>{kondoResults.summary.warning} warnings</span>
-            )}
-            {!kondoResults.summary?.error && !kondoResults.summary?.warning && (
-              <span style={{ color: "#4ade80" }}>OK</span>
-            )}
-          </>
-        ) : (
-          <span style={{ color: "#64748b" }}>clj-kondo</span>
-        )}
+          ))}
+        </div>
+
+        {/* clj-kondo status */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
+          {kondoRunning ? (
+            <span style={{ color: "#fbbf24" }}>clj-kondo...</span>
+          ) : kondoResults ? (
+            <>
+              <span style={{ color: kondoResults.summary?.error > 0 ? "#f87171" : kondoResults.summary?.warning > 0 ? "#fbbf24" : "#4ade80" }}>
+                clj-kondo:
+              </span>
+              {kondoResults.summary?.error > 0 && (
+                <span style={{ color: "#f87171" }}>{kondoResults.summary.error}E</span>
+              )}
+              {kondoResults.summary?.warning > 0 && (
+                <span style={{ color: "#fbbf24" }}>{kondoResults.summary.warning}W</span>
+              )}
+              {!kondoResults.summary?.error && !kondoResults.summary?.warning && (
+                <span style={{ color: "#4ade80" }}>OK</span>
+              )}
+            </>
+          ) : (
+            <span style={{ color: "#64748b" }}>clj-kondo</span>
+          )}
+        </div>
+
+        {/* Terminal toggle button */}
+        <button
+          onClick={toggleTerminal}
+          style={{
+            background: showTerminal ? "#3b82f6" : "rgba(255,255,255,0.1)",
+            color: "white",
+            border: "none",
+            borderRadius: "4px",
+            padding: "6px 12px",
+            cursor: "pointer",
+            fontSize: "12px",
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+          }}
+        >
+          <span style={{ fontFamily: "monospace" }}>&gt;_</span>
+          Terminal
+        </button>
       </div>
 
       {/* Project setup modal */}
