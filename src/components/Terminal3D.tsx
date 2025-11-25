@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { CanvasAddon } from '@xterm/addon-canvas';
 import '@xterm/xterm/css/xterm.css';
 
 interface Terminal3DProps {
@@ -19,28 +20,33 @@ export function Terminal3D({
   wsUrl = 'ws://localhost:8765',
 }: Terminal3DProps) {
   const meshRef = useRef<THREE.Mesh>(null);
-  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
-  const terminalRef = useRef<Terminal | null>(null);
+  const materialRef = useRef<THREE.MeshBasicMaterial>(null);
+  const textureRef = useRef<THREE.CanvasTexture | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
-
-  // Canvas dimensions for sharp rendering
-  const canvasWidth = 1920;
-  const canvasHeight = 1280;
+  const renderCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [textureReady, setTextureReady] = useState(false);
 
   useEffect(() => {
-    // Create hidden container for xterm
+    console.log('[Terminal3D] Mounting');
+
+    // Create container for xterm
+    // Must be visible in viewport for canvas to render properly
     const container = document.createElement('div');
-    container.style.position = 'absolute';
-    container.style.left = '-9999px';
-    container.style.top = '-9999px';
-    container.style.width = `${canvasWidth}px`;
-    container.style.height = `${canvasHeight}px`;
+    container.style.position = 'fixed';
+    container.style.left = '0';
+    container.style.top = '0';
+    container.style.width = '1920px';
+    container.style.height = '1280px';
+    container.style.overflow = 'hidden';
+    container.style.pointerEvents = 'none';
+    container.style.opacity = '0.01'; // Nearly invisible but still renders
+    container.style.zIndex = '-1';
     document.body.appendChild(container);
     containerRef.current = container;
 
-    // Create terminal
+    const cols = 160;
+    const rows = 50;
+
     const term = new Terminal({
       theme: {
         background: '#1a1a2e',
@@ -65,65 +71,94 @@ export function Terminal3D({
         brightCyan: '#67e8f9',
         brightWhite: '#ffffff',
       },
-      fontSize: 16,
-      fontFamily: 'JetBrains Mono, Fira Code, Monaco, monospace',
+      fontSize: 20,
+      fontFamily: 'monospace',
       cursorBlink: true,
       cursorStyle: 'block',
       allowTransparency: false,
       scrollback: 1000,
+      cols,
+      rows,
     });
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    fitAddonRef.current = fitAddon;
 
     term.open(container);
-    fitAddon.fit();
-    terminalRef.current = term;
+
+    // Load canvas addon for texture rendering
+    const canvasAddon = new CanvasAddon();
+    term.loadAddon(canvasAddon);
+
+    term.write('Connecting to PTY server...\r\n');
+
+    // Setup texture after canvas is ready
+    const setupTexture = () => {
+      const canvases = container.querySelectorAll('.xterm-screen canvas');
+      if (canvases.length > 0) {
+        const firstCanvas = canvases[0] as HTMLCanvasElement;
+        const renderCanvas = document.createElement('canvas');
+        renderCanvas.width = firstCanvas.width;
+        renderCanvas.height = firstCanvas.height;
+        renderCanvasRef.current = renderCanvas;
+
+        const tex = new THREE.CanvasTexture(renderCanvas);
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+        textureRef.current = tex;
+        setTextureReady(true);
+        console.log('[Terminal3D] Texture ready:', renderCanvas.width, 'x', renderCanvas.height);
+        return true;
+      }
+      return false;
+    };
+
+    // Retry until canvas is available
+    const trySetup = () => {
+      if (!setupTexture()) {
+        setTimeout(trySetup, 100);
+      }
+    };
+    setTimeout(trySetup, 100);
 
     // Connect WebSocket
     const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('Terminal connected');
-      // Send initial size
-      const dims = fitAddon.proposeDimensions();
-      if (dims) {
-        ws.send(`\x1b[8;${dims.rows};${dims.cols}t`);
-      }
+      console.log('[Terminal3D] WebSocket connected');
+      term.write('\x1b[2K\rConnected!\r\n');
+      ws.send(`\x1b[8;${rows};${cols}t`);
+      // Focus terminal and enable pointer events on textarea
+      setTimeout(() => {
+        const textarea = container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
+        if (textarea) {
+          textarea.style.pointerEvents = 'auto';
+          textarea.focus();
+        }
+      }, 100);
     };
 
     ws.onmessage = (event) => {
       term.write(event.data);
     };
 
-    ws.onerror = (err) => {
-      console.error('Terminal WebSocket error:', err);
+    ws.onerror = () => {
       term.write('\r\n\x1b[31mConnection error\x1b[0m\r\n');
     };
 
     ws.onclose = () => {
-      term.write('\r\n\x1b[33mConnection closed\x1b[0m\r\n');
+      console.log('[Terminal3D] WebSocket closed');
     };
 
-    // Handle terminal input
     term.onData((data) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(data);
       }
     });
 
-    // Create texture from terminal canvas
-    const termCanvas = container.querySelector('canvas');
-    if (termCanvas) {
-      const tex = new THREE.CanvasTexture(termCanvas);
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      setTexture(tex);
-    }
-
     return () => {
+      console.log('[Terminal3D] Cleanup');
       ws.close();
       term.dispose();
       container.remove();
@@ -132,40 +167,54 @@ export function Terminal3D({
 
   // Update texture every frame
   useFrame(() => {
-    if (texture && containerRef.current) {
-      const termCanvas = containerRef.current.querySelector('canvas');
-      if (termCanvas) {
-        texture.needsUpdate = true;
+    if (!materialRef.current || !renderCanvasRef.current || !containerRef.current || !textureRef.current) return;
+
+    const ctx = renderCanvasRef.current.getContext('2d');
+    if (ctx) {
+      // Clear background
+      ctx.fillStyle = '#1a1a2e';
+      ctx.fillRect(0, 0, renderCanvasRef.current.width, renderCanvasRef.current.height);
+
+      // Composite xterm canvases
+      const canvases = containerRef.current.querySelectorAll('.xterm-screen canvas');
+      canvases.forEach((canvas) => {
+        const c = canvas as HTMLCanvasElement;
+        if (c.width > 0 && c.height > 0) {
+          ctx.drawImage(c, 0, 0);
+        }
+      });
+
+      textureRef.current.needsUpdate = true;
+
+      // Apply texture to material
+      if (materialRef.current.map !== textureRef.current) {
+        materialRef.current.map = textureRef.current;
+        materialRef.current.color.set('#888888'); // Dimmed to match scene
+        materialRef.current.needsUpdate = true;
       }
     }
   });
 
-  // Focus handler - forward keyboard events to terminal
-  const handlePointerDown = useCallback(() => {
-    if (terminalRef.current) {
-      terminalRef.current.focus();
-    }
+  // Click to focus
+  const handlePointerDown = useCallback((e: any) => {
+    e.stopPropagation();
+    // Need a small delay to ensure the click doesn't get eaten
+    setTimeout(() => {
+      const textarea = containerRef.current?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
+      if (textarea) {
+        textarea.style.pointerEvents = 'auto';
+        textarea.focus();
+        console.log('[Terminal3D] Focused terminal');
+      }
+    }, 10);
   }, []);
 
   return (
     <group position={position}>
-      {/* Main terminal panel */}
       <mesh ref={meshRef} onPointerDown={handlePointerDown}>
         <planeGeometry args={[width, height]} />
-        {texture ? (
-          <meshBasicMaterial map={texture} side={THREE.DoubleSide} />
-        ) : (
-          <meshBasicMaterial color="#1a1a2e" />
-        )}
+        <meshBasicMaterial ref={materialRef} color="#1a1a2e" side={THREE.DoubleSide} />
       </mesh>
-
-      {/* Subtle border */}
-      <lineSegments>
-        <edgesGeometry
-          args={[new THREE.PlaneGeometry(width + 0.1, height + 0.1)]}
-        />
-        <lineBasicMaterial color="#3b82f6" opacity={0.5} transparent />
-      </lineSegments>
     </group>
   );
 }

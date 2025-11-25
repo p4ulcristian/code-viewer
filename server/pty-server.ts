@@ -10,13 +10,23 @@ console.log(`PTY WebSocket server running on ws://localhost:${PORT}`);
 wss.on('connection', (ws: WebSocket) => {
   console.log('Client connected');
 
-  const pty: IPty = spawn('claude', [], {
+  // Use bash with login shell to get proper environment
+  const shell = '/bin/bash';
+  console.log('Spawning shell:', shell);
+
+  const pty: IPty = spawn(shell, ['--login'], {
     name: 'xterm-256color',
-    cols: 120,
-    rows: 40,
+    cols: 160,
+    rows: 50,
     cwd: process.env.HOME || '/home',
-    env: process.env as Record<string, string>,
+    env: {
+      ...process.env,
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+    } as Record<string, string>,
   });
+
+  console.log('PTY spawned with PID:', pty.pid);
 
   pty.onData((data: string) => {
     if (ws.readyState === WebSocket.OPEN) {
@@ -24,8 +34,8 @@ wss.on('connection', (ws: WebSocket) => {
     }
   });
 
-  pty.onExit(({ exitCode }) => {
-    console.log(`PTY exited with code ${exitCode}`);
+  pty.onExit(({ exitCode, signal }) => {
+    console.log(`PTY exited with code ${exitCode}, signal: ${signal}`);
     ws.close();
   });
 

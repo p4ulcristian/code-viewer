@@ -920,6 +920,16 @@ export default function App() {
         return;
       }
 
+      // When terminal is shown, only handle Escape to close it
+      // Let all other keys go to the terminal
+      if (showTerminal) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          toggleTerminal();
+        }
+        return;
+      }
+
       if (e.key === "Escape") {
         // Go back one level and reset selection
         if (currentPath.length > 0) {
@@ -999,7 +1009,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup, isPanelView, toggleTerminal]);
+  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup, isPanelView, toggleTerminal, showTerminal]);
 
   return (
     <div
