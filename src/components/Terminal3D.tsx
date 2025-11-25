@@ -8,8 +8,8 @@ import '@xterm/xterm/css/xterm.css';
 
 interface Terminal3DProps {
   position?: [number, number, number];
-  width?: number;
-  height?: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
   wsUrl?: string;
   cwd?: string;
 }
@@ -26,8 +26,8 @@ const terminalState = {
 
 export function Terminal3D({
   position = [0, 0, 0],
-  width = 30,
-  height = 20,
+  viewportWidth = 30,
+  viewportHeight = 20,
   wsUrl = 'ws://localhost:8765',
   cwd,
 }: Terminal3DProps) {
@@ -35,6 +35,7 @@ export function Terminal3D({
   const materialRef = useRef<THREE.MeshBasicMaterial>(null);
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
   const [textureReady, setTextureReady] = useState(false);
+  const [canvasSize, setCanvasSize] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
     console.log('[Terminal3D] Mounting, initialized:', terminalState.initialized);
@@ -51,6 +52,7 @@ export function Terminal3D({
         tex.generateMipmaps = false;
         textureRef.current = tex;
         setTextureReady(true);
+        setCanvasSize({ width: terminalState.renderCanvas.width, height: terminalState.renderCanvas.height });
       }
 
       // Focus terminal
@@ -72,22 +74,30 @@ export function Terminal3D({
     terminalState.currentCwd = cwd || null;
     console.log('[Terminal3D] Creating new terminal, cwd:', cwd);
 
+    // Terminal dimensions - these need to match PTY server
+    const cols = 160;
+    const rows = 50;
+    const fontSize = 16;
+    // Calculate container size based on terminal dimensions
+    // Character cell is approximately fontSize * 0.6 wide and fontSize * 1.2 tall
+    const charWidth = fontSize * 0.6;
+    const charHeight = fontSize * 1.2;
+    const containerWidth = Math.ceil(cols * charWidth) + 40; // +40 for scrollbar and padding
+    const containerHeight = Math.ceil(rows * charHeight) + 20;
+
     // Create container for xterm
     const container = document.createElement('div');
     container.style.position = 'fixed';
     container.style.left = '0';
     container.style.top = '0';
-    container.style.width = '1920px';
-    container.style.height = '1280px';
+    container.style.width = `${containerWidth}px`;
+    container.style.height = `${containerHeight}px`;
     container.style.overflow = 'hidden';
     container.style.pointerEvents = 'none';
     container.style.opacity = '0.01';
     container.style.zIndex = '-1';
     document.body.appendChild(container);
     terminalState.container = container;
-
-    const cols = 160;
-    const rows = 50;
 
     const term = new Terminal({
       theme: {
@@ -113,7 +123,7 @@ export function Terminal3D({
         brightCyan: '#67e8f9',
         brightWhite: '#ffffff',
       },
-      fontSize: 20,
+      fontSize,
       fontFamily: 'monospace',
       cursorBlink: true,
       cursorStyle: 'block',
@@ -151,6 +161,7 @@ export function Terminal3D({
         tex.generateMipmaps = false;
         textureRef.current = tex;
         setTextureReady(true);
+        setCanvasSize({ width: firstCanvas.width, height: firstCanvas.height });
         console.log('[Terminal3D] Texture ready:', renderCanvas.width, 'x', renderCanvas.height);
         return true;
       }
@@ -245,10 +256,33 @@ export function Terminal3D({
     }, 10);
   }, []);
 
+  // Calculate plane dimensions to fit viewport while preserving aspect ratio
+  const paddingFactor = 0.9;
+  let planeWidth: number;
+  let planeHeight: number;
+
+  if (canvasSize) {
+    const canvasAspect = canvasSize.width / canvasSize.height;
+    const viewportAspect = viewportWidth / viewportHeight;
+
+    if (canvasAspect > viewportAspect) {
+      // Canvas is wider than viewport - fit to width
+      planeWidth = viewportWidth * paddingFactor;
+      planeHeight = planeWidth / canvasAspect;
+    } else {
+      // Canvas is taller than viewport - fit to height
+      planeHeight = viewportHeight * paddingFactor;
+      planeWidth = planeHeight * canvasAspect;
+    }
+  } else {
+    planeWidth = viewportWidth * paddingFactor;
+    planeHeight = viewportHeight * paddingFactor;
+  }
+
   return (
     <group position={position}>
       <mesh ref={meshRef} onPointerDown={handlePointerDown}>
-        <planeGeometry args={[width, height]} />
+        <planeGeometry key={`${planeWidth}-${planeHeight}`} args={[planeWidth, planeHeight]} />
         <meshBasicMaterial ref={materialRef} color="#1a1a2e" side={THREE.DoubleSide} />
       </mesh>
     </group>

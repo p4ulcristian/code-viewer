@@ -430,7 +430,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
   const prefix = currentPath.join(".");
   const prevPositionRef = useRef<{ x: number; y: number; z: number } | null>(null);
 
-  // Calculate terminal size to fill viewport with padding
+  // Calculate terminal viewport size for filling the screen
   // Camera will be positioned to fit panelWidth (20) in view - matches CameraController logic
   const TERMINAL_PANEL_WIDTH = 20; // Panel width used for camera distance calc
   const vFov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
@@ -441,10 +441,6 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
   // Viewport dimensions at that distance
   const terminalViewportHeight = 2 * Math.tan(vFov / 2) * terminalCameraDistance;
   const terminalViewportWidth = terminalViewportHeight * aspect;
-  // Size terminal to fill 90% of that viewport
-  const paddingFactor = 0.9;
-  const terminalWidth = terminalViewportWidth * paddingFactor;
-  const terminalHeight = terminalViewportHeight * paddingFactor;
 
   const groups = useMemo(() => {
     if (currentPath.length === 0) {
@@ -515,9 +511,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
     const lineHeight = 18 * scale;
     const padding = 20 * scale;
     const headerHeight = 36 * scale;
-    const maxLineLength = Math.max(...lines.map(l => l.length), 40);
-    const fontSize = 14 * scale;
-    const canvasWidth = Math.min(2048 * scale, Math.max(600 * scale, (maxLineLength * fontSize * 0.6) + padding * 2 + 60 * scale));
+    const canvasWidth = 1200 * scale;
     const canvasHeight = headerHeight + padding * 2 + lines.length * lineHeight;
 
     const baseWidth = 20;
@@ -567,8 +561,8 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
       {showTerminal && (
         <Terminal3D
           position={[-80, 0, 30]}
-          width={terminalWidth}
-          height={terminalHeight}
+          viewportWidth={terminalViewportWidth}
+          viewportHeight={terminalViewportHeight}
           cwd={projectPath ?? undefined}
         />
       )}
@@ -704,9 +698,8 @@ function CodePanel3D({
 
   const lines = code.split("\n");
 
-  // Calculate canvas size based on content
-  const maxLineLength = Math.max(...lines.map(l => l.length), 40);
-  const canvasWidth = Math.min(2048 * scale, Math.max(600 * scale, (maxLineLength * fontSize * 0.6) + padding * 2 + 60 * scale));
+  // Fixed canvas width for consistent font size across all files
+  const canvasWidth = 1200 * scale;
   const canvasHeight = headerHeight + padding * 2 + lines.length * lineHeight;
 
   // Render code to canvas
