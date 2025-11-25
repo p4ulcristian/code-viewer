@@ -58,7 +58,9 @@ function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, spac
     color: string;
     file: string | null; // File path if this is a single-file namespace
   }> = [];
-  const entries = Array.from(groups.entries());
+
+  // Sort entries alphabetically by id
+  const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   const numGroups = entries.length;
 
   // Center the line around origin
@@ -68,17 +70,15 @@ function computeGroupPositions(groups: Map<string, typeof graphData.nodes>, spac
   entries.forEach(([prefix, nodes], idx) => {
     const x = startX + idx * spacing;
 
-    const color = categoryColors[prefix] || categoryColors[prefix.split(".")[0]] || categoryColors.other;
-
-    // If this group has exactly 1 node with a file, it's a real file namespace
-    const singleNode = nodes.length === 1 ? nodes[0] : null;
-    const file = singleNode ? (singleNode as any).file || null : null;
+    // Only show file if the group ID exactly matches a node ID (it's a leaf namespace)
+    const exactMatch = nodes.find(n => n.id === prefix);
+    const file = exactMatch ? (exactMatch as any).file || null : null;
 
     result.push({
       id: prefix,
       position: { x, y: 0, z: 0 },
       count: nodes.length,
-      color,
+      color: "#3b82f6", // Same color for all
       file,
     });
   });
@@ -138,7 +138,6 @@ function getEdgesBetweenGroups(groups: string[]): Array<{ source: string; target
 interface GroupNodeProps {
   id: string;
   position: { x: number; y: number; z: number };
-  count: number;
   color: string;
   isSelected: boolean;
   onClick: () => void;
@@ -146,9 +145,9 @@ interface GroupNodeProps {
   code: string | null; // Pre-loaded code content
 }
 
-function GroupNode({ id, position, count, color, isSelected, onClick, file, code }: GroupNodeProps) {
+function GroupNode({ id, position, color, isSelected, onClick, file, code }: GroupNodeProps) {
   const meshRef = useRef<THREE.Mesh>(null);
-  const size = Math.max(1, Math.log(count + 1) * 1.5);
+  const size = 2; // Same size for all
 
   // Only show code panel if this namespace has a real file
   const hasFile = file && code;
@@ -177,15 +176,17 @@ function GroupNode({ id, position, count, color, isSelected, onClick, file, code
       >
         {id}
       </Text>
-      <Text
-        position={[0, size + 3.5, 0]}
-        fontSize={1.2}
-        color="#94a3b8"
-        anchorX="center"
-        anchorY="middle"
-      >
-        {hasFile ? file!.split("/").pop() : `${count} ns`}
-      </Text>
+      {hasFile && (
+        <Text
+          position={[0, size + 3.5, 0]}
+          fontSize={1.2}
+          color="#94a3b8"
+          anchorX="center"
+          anchorY="middle"
+        >
+          {file!.split("/").pop()}
+        </Text>
+      )}
 
       {/* Show code panel below if this is a real file */}
       {hasFile && (
@@ -237,11 +238,13 @@ interface SceneProps {
 }
 
 // Camera controller that moves camera in front of target
-function CameraController({ target, panelWidth }: { target: { x: number; y: number; z: number } | null; panelWidth: number }) {
+function CameraController({ target, panelWidth, hasFileSelected }: { target: { x: number; y: number; z: number } | null; panelWidth: number; hasFileSelected: boolean }) {
   const { camera, size, gl } = useThree();
   const controlsRef = useRef<any>(null);
   const prevTargetRef = useRef<string | null>(null);
   const animationRef = useRef<number | null>(null);
+  const hasFileSelectedRef = useRef(hasFileSelected);
+  hasFileSelectedRef.current = hasFileSelected;
 
   // Handle scroll for panning (shift+scroll or horizontal) and zoom (ctrl+scroll or pinch)
   useEffect(() => {
@@ -264,9 +267,10 @@ function CameraController({ target, panelWidth }: { target: { x: number; y: numb
       const up = new THREE.Vector3();
       camera.matrix.extractBasis(right, up, new THREE.Vector3());
 
-      // Pan based on scroll delta
-      const deltaX = e.deltaX * panSpeed;
-      const deltaY = e.deltaY * panSpeed;
+      // When file is selected: only vertical scroll allowed
+      // When no file selected: only horizontal scroll allowed
+      const deltaX = hasFileSelectedRef.current ? 0 : e.deltaX * panSpeed;
+      const deltaY = hasFileSelectedRef.current ? e.deltaY * panSpeed : 0;
 
       camera.position.addScaledVector(right, deltaX);
       camera.position.addScaledVector(up, -deltaY);
@@ -297,19 +301,28 @@ function CameraController({ target, panelWidth }: { target: { x: number; y: numb
     let cameraPos: THREE.Vector3;
 
     if (target) {
-      targetPos = new THREE.Vector3(target.x, target.y, target.z);
+      // Check if this is an "X only" centering (y=0, z=0 means just center horizontally)
+      const isXOnlyCenter = target.y === 0 && target.z === 0;
 
-      // Calculate distance needed to fit panel width in viewport
-      const vFov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-      const aspect = size.width / size.height;
-      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
-      const distance = (panelWidth / 2) / Math.tan(hFov / 2) / 0.85;
+      if (isXOnlyCenter) {
+        // Only move X, keep current Y and Z positions
+        targetPos = new THREE.Vector3(target.x, controlsRef.current.target.y, controlsRef.current.target.z);
+        cameraPos = new THREE.Vector3(target.x, camera.position.y, camera.position.z);
+      } else {
+        targetPos = new THREE.Vector3(target.x, target.y, target.z);
 
-      cameraPos = new THREE.Vector3(target.x, target.y, target.z + distance);
+        // Calculate distance needed to fit panel width in viewport
+        const vFov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+        const aspect = size.width / size.height;
+        const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+        const distance = (panelWidth / 2) / Math.tan(hFov / 2) / 0.85;
+
+        cameraPos = new THREE.Vector3(target.x, target.y, target.z + distance);
+      }
     } else {
-      // Reset to original camera position
+      // Reset to original camera position - directly in front of the circles
       targetPos = new THREE.Vector3(0, 0, 0);
-      cameraPos = new THREE.Vector3(0, 60, 80);
+      cameraPos = new THREE.Vector3(0, 0, 100);
     }
 
     // Animate camera to new position
@@ -386,17 +399,18 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
 
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
 
-  const handleClick = useCallback((groupId: string, position: { x: number; y: number; z: number }) => {
+  const handleClick = useCallback((groupId: string, position: { x: number; y: number; z: number }, hasFile: boolean) => {
     const childGroups = getChildNamespaces(groupId, depth + 1);
     const hasChildren = childGroups.size > 1 ||
       (childGroups.size === 1 && !childGroups.has(groupId));
 
-    // Set camera target to clicked node
-    onCameraTargetChange(position);
-
     if (hasChildren) {
+      // For non-file nodes, only center X (keep current Y and Z)
+      onCameraTargetChange({ x: position.x, y: 0, z: 0 });
       onNavigate([...currentPath, groupId.split(".").pop()!]);
     } else {
+      // For file nodes, center on the full position
+      onCameraTargetChange(position);
       setSelectedGroup(selectedGroup === groupId ? null : groupId);
     }
   }, [currentPath, depth, onNavigate, selectedGroup, onCameraTargetChange]);
@@ -421,17 +435,20 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
             key={group.id}
             id={group.id}
             position={group.position}
-            count={group.count}
             color={group.color}
             isSelected={selectedGroup === group.id}
-            onClick={() => handleClick(group.id, group.position)}
+            onClick={() => handleClick(group.id, group.position, group.file !== null)}
             file={group.file}
             code={group.file ? fileContents.get(group.file) || null : null}
           />
         ))}
       </group>
 
-      <CameraController target={cameraTarget} panelWidth={20} />
+      <CameraController
+        target={cameraTarget}
+        panelWidth={20}
+        hasFileSelected={selectedGroup !== null && groupNodes.some(g => g.id === selectedGroup && g.file !== null)}
+      />
     </>
   );
 }
@@ -841,7 +858,7 @@ export default function App() {
         </div>
       )}
 
-      <Canvas camera={{ position: [0, 60, 80], fov: 50 }}>
+      <Canvas camera={{ position: [0, 0, 100], fov: 50 }}>
         <Scene
           currentPath={currentPath}
           onNavigate={handleNavigate}
