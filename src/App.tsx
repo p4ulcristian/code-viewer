@@ -415,9 +415,26 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds }:
 }
 
 function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal }: SceneProps) {
+  const { camera, size } = useThree();
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
   const prevPositionRef = useRef<{ x: number; y: number; z: number } | null>(null);
+
+  // Calculate terminal size to fill viewport with padding
+  // Camera will be positioned to fit panelWidth (20) in view - matches CameraController logic
+  const TERMINAL_PANEL_WIDTH = 20; // Panel width used for camera distance calc
+  const vFov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+  const aspect = size.width / size.height;
+  const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+  // Distance camera will be at when viewing terminal (matches CameraController logic)
+  const terminalCameraDistance = (TERMINAL_PANEL_WIDTH / 2) / Math.tan(hFov / 2) / 0.85;
+  // Viewport dimensions at that distance
+  const terminalViewportHeight = 2 * Math.tan(vFov / 2) * terminalCameraDistance;
+  const terminalViewportWidth = terminalViewportHeight * aspect;
+  // Size terminal to fill 90% of that viewport
+  const paddingFactor = 0.9;
+  const terminalWidth = terminalViewportWidth * paddingFactor;
+  const terminalHeight = terminalViewportHeight * paddingFactor;
 
   const groups = useMemo(() => {
     if (currentPath.length === 0) {
@@ -510,12 +527,8 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
       <pointLight position={[50, 50, 50]} intensity={1} />
       <pointLight position={[-50, -50, -50]} intensity={0.5} />
 
-      {/* Axis helper - Red=X, Green=Y, Blue=Z */}
-      <axesHelper args={[100]} />
 
       <group>
-        <GroupEdges edges={edges} nodePositions={nodePositions} />
-
         {groupNodes.map((group) => (
           <GroupNode
             key={group.id}
@@ -539,12 +552,12 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         scrollBounds={scrollBounds}
       />
 
-      {/* Terminal panel */}
+      {/* Terminal panel - positioned to match TERMINAL_POSITION target */}
       {showTerminal && (
         <Terminal3D
-          position={[-50, 0, 0]}
-          width={40}
-          height={25}
+          position={[-80, 0, 30]}
+          width={terminalWidth}
+          height={terminalHeight}
         />
       )}
     </>
@@ -828,6 +841,24 @@ export default function App() {
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [isPanelView, setIsPanelView] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
+  const prevCameraTargetRef = useRef<{ x: number; y: number; z: number } | null>(null);
+
+  // Terminal position (same as in Scene) - z is set to trigger close camera view
+  const TERMINAL_POSITION = { x: -80, y: 0, z: 30 };
+
+  const toggleTerminal = useCallback(() => {
+    setShowTerminal(prev => {
+      if (!prev) {
+        // Opening terminal - save current camera and focus on terminal
+        prevCameraTargetRef.current = cameraTarget;
+        setCameraTarget(TERMINAL_POSITION);
+      } else {
+        // Closing terminal - restore previous camera
+        setCameraTarget(prevCameraTargetRef.current);
+      }
+      return !prev;
+    });
+  }, [cameraTarget]);
 
   const handleNavigate = useCallback((path: string[]) => {
     setCurrentPath(path);
@@ -885,7 +916,7 @@ export default function App() {
       // Toggle terminal with backtick
       if (e.key === "`") {
         e.preventDefault();
-        setShowTerminal(prev => !prev);
+        toggleTerminal();
         return;
       }
 
@@ -968,7 +999,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup, isPanelView]);
+  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup, isPanelView, toggleTerminal]);
 
   return (
     <div
@@ -1022,6 +1053,30 @@ export default function App() {
           </span>
         ))}
       </div>
+
+      {/* Terminal toggle button */}
+      <button
+        onClick={toggleTerminal}
+        style={{
+          position: "absolute",
+          top: "16px",
+          right: "16px",
+          zIndex: 1000,
+          background: showTerminal ? "#3b82f6" : "rgba(255,255,255,0.1)",
+          color: "white",
+          border: "none",
+          borderRadius: "4px",
+          padding: "6px 12px",
+          cursor: "pointer",
+          fontSize: "12px",
+          display: "flex",
+          alignItems: "center",
+          gap: "6px",
+        }}
+      >
+        <span style={{ fontFamily: "monospace" }}>&gt;_</span>
+        Terminal
+      </button>
 
       {loading && (
         <div style={{
