@@ -3,13 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "dev:full": "concurrently \"npm run pty\" \"npm run dev\"",
     "pty": "tsx server/pty-server.ts",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"npm run dev\" \"NODE_ENV=development electron .\"",
+    "electron:build": "npm run build && electron-builder"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
@@ -36,6 +39,8 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^5.1.1",
     "concurrently": "^9.1.2",
+    "electron": "^39.2.3",
+    "electron-builder": "^26.0.12",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",

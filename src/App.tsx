@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { graphData } from "./graph-data";
 import { Terminal3D, focusTerminal } from "./components/Terminal3D";
 import { ProjectSetup } from "./components/ProjectSetup";
+import { HUD3D } from "./components/HUD3D";
 
 const STORAGE_KEY = 'ns-visualizer-project-path';
 const TERMINALS_STORAGE_KEY = 'ns-visualizer-terminals';
@@ -269,6 +270,7 @@ interface SceneProps {
   isPanelView: boolean;
   onPanelViewChange: (isPanelView: boolean) => void;
   showTerminal: boolean;
+  onShowTerminalChange: (show: boolean) => void;
   projectPath: string | null;
   terminals: string[]; // List of terminal IDs
   activeTerminal: number; // Index of active terminal
@@ -554,7 +556,7 @@ function TerminalButton({
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange, skipInitialAnimation }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, onShowTerminalChange, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange, skipInitialAnimation }: SceneProps) {
   const { camera, size } = useThree();
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
@@ -693,6 +695,13 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         scrollBounds={scrollBounds}
         skipInitialAnimation={skipInitialAnimation}
         terminalActive={showTerminal}
+      />
+
+      {/* 3D HUD - follows camera */}
+      <HUD3D
+        showTerminal={showTerminal}
+        onTerminalClick={() => onShowTerminalChange(true)}
+        onWorkspaceClick={() => onShowTerminalChange(false)}
       />
 
       {/* Terminal panels - each positioned below the previous one */}
@@ -1461,6 +1470,7 @@ export default function App() {
           isPanelView={isPanelView}
           onPanelViewChange={handlePanelViewChange}
           showTerminal={showTerminal}
+          onShowTerminalChange={setShowTerminal}
           projectPath={projectPath}
           terminals={terminals}
           activeTerminal={activeTerminal}
