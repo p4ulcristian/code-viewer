@@ -280,12 +280,13 @@ interface SceneProps {
 }
 
 // Camera controller that moves camera in front of target
-function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, skipInitialAnimation }: {
+function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, skipInitialAnimation, terminalActive }: {
   target: { x: number; y: number; z: number } | null;
   panelWidth: number;
   hasFileSelected: boolean;
   scrollBounds: { minY: number; maxY: number } | null;
   skipInitialAnimation?: boolean;
+  terminalActive?: boolean;
 }) {
   const { camera, size, gl } = useThree();
   const controlsRef = useRef<any>(null);
@@ -293,9 +294,11 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, s
   const animationRef = useRef<number | null>(null);
   const hasFileSelectedRef = useRef(hasFileSelected);
   const scrollBoundsRef = useRef(scrollBounds);
+  const terminalActiveRef = useRef(terminalActive);
   const isFirstRenderRef = useRef(true);
   hasFileSelectedRef.current = hasFileSelected;
   scrollBoundsRef.current = scrollBounds;
+  terminalActiveRef.current = terminalActive;
 
   // Handle scroll for panning (shift+scroll or horizontal) and zoom (ctrl+scroll or pinch)
   useEffect(() => {
@@ -303,6 +306,11 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, s
 
     const handleWheel = (e: WheelEvent) => {
       if (!controlsRef.current) return;
+
+      // When terminal is active, don't capture scroll - let terminal handle it
+      if (terminalActiveRef.current) {
+        return;
+      }
 
       // Prevent all zoom (ctrl+scroll, pinch, etc)
       e.preventDefault();
@@ -684,6 +692,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         hasFileSelected={selectedGroup !== null && groupNodes.some(g => g.id === selectedGroup && g.file !== null)}
         scrollBounds={scrollBounds}
         skipInitialAnimation={skipInitialAnimation}
+        terminalActive={showTerminal}
       />
 
       {/* Terminal panels - each positioned below the previous one */}

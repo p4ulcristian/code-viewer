@@ -22,7 +22,30 @@ const terminalInstances = new Map<string, {
   terminal: Terminal;
   ws: WebSocket;
   renderCanvas: HTMLCanvasElement;
+  fontSize: number;
 }>();
+
+// Font size limits
+const MIN_FONT_SIZE = 10;
+const MAX_FONT_SIZE = 32;
+const DEFAULT_FONT_SIZE = 16;
+
+// Load saved font size from localStorage
+const FONT_SIZE_STORAGE_KEY = 'ns-visualizer-terminal-font-size';
+function getSavedFontSize(): number {
+  const saved = localStorage.getItem(FONT_SIZE_STORAGE_KEY);
+  if (saved) {
+    const size = parseInt(saved, 10);
+    if (!isNaN(size) && size >= MIN_FONT_SIZE && size <= MAX_FONT_SIZE) {
+      return size;
+    }
+  }
+  return DEFAULT_FONT_SIZE;
+}
+
+function saveFontSize(size: number) {
+  localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(size));
+}
 
 export function Terminal3D({
   id,
@@ -78,7 +101,7 @@ export function Terminal3D({
     // Terminal dimensions - these need to match PTY server
     const cols = 160;
     const rows = 50;
-    const fontSize = 16;
+    const fontSize = getSavedFontSize();
     const charWidth = fontSize * 0.6;
     const charHeight = fontSize * 1.2;
     const containerWidth = Math.ceil(cols * charWidth) + 40;
@@ -158,7 +181,7 @@ export function Terminal3D({
         setCanvasSize({ width: firstCanvas.width, height: firstCanvas.height });
 
         // Store the instance
-        const instance = { container, terminal: term, ws: ws!, renderCanvas };
+        const instance = { container, terminal: term, ws: ws!, renderCanvas, fontSize };
         terminalInstances.set(id, instance);
         instanceRef.current = instance;
 
@@ -263,6 +286,16 @@ export function Terminal3D({
     }, 10);
   }, [id, onFocus]);
 
+  const handleWheel = useCallback((e: any) => {
+    e.stopPropagation();
+    const instance = instanceRef.current;
+    if (instance?.terminal) {
+      // Convert wheel delta to scroll lines (negative delta = scroll up)
+      const lines = Math.sign(e.deltaY) * 3;
+      instance.terminal.scrollLines(lines);
+    }
+  }, []);
+
   // Calculate plane dimensions to fit viewport while preserving aspect ratio
   const paddingFactor = 0.9;
   let planeWidth: number;
@@ -286,7 +319,7 @@ export function Terminal3D({
 
   return (
     <group position={position}>
-      <mesh ref={meshRef} onPointerDown={handlePointerDown}>
+      <mesh ref={meshRef} onPointerDown={handlePointerDown} onWheel={handleWheel}>
         <planeGeometry key={`${planeWidth}-${planeHeight}`} args={[planeWidth, planeHeight]} />
         <meshBasicMaterial ref={materialRef} color="#1a1a2e" side={THREE.DoubleSide} />
       </mesh>
@@ -304,4 +337,61 @@ export function focusTerminal(id: string) {
       textarea.focus();
     }
   }
+}
+
+// Export function to change font size for all terminals
+export function changeTerminalFontSize(delta: number): number {
+  const currentSize = getSavedFontSize();
+  const newSize = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, currentSize + delta));
+
+  if (newSize !== currentSize) {
+    saveFontSize(newSize);
+
+    // Update all terminal instances
+    terminalInstances.forEach((instance, id) => {
+      instance.fontSize = newSize;
+      instance.terminal.options.fontSize = newSize;
+
+      // Update container size
+      const cols = 160;
+      const rows = 50;
+      const charWidth = newSize * 0.6;
+      const charHeight = newSize * 1.2;
+      const containerWidth = Math.ceil(cols * charWidth) + 40;
+      const containerHeight = Math.ceil(rows * charHeight) + 20;
+
+      instance.container.style.width = `${containerWidth}px`;
+      instance.container.style.height = `${containerHeight}px`;
+
+      console.log(`[Terminal3D:${id}] Font size changed to ${newSize}`);
+    });
+  }
+
+  return newSize;
+}
+
+// Get current font size
+export function getTerminalFontSize(): number {
+  return getSavedFontSize();
+}
+
+// Setup global keyboard handler for font size (Ctrl+Plus/Minus)
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', (e) => {
+    // Check for Ctrl+Plus or Ctrl+Minus (also handle = for plus without shift)
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === '+' || e.key === '=' || e.key === 'Equal') {
+        e.preventDefault();
+        changeTerminalFontSize(2);
+      } else if (e.key === '-' || e.key === 'Minus') {
+        e.preventDefault();
+        changeTerminalFontSize(-2);
+      } else if (e.key === '0') {
+        e.preventDefault();
+        // Reset to default
+        const current = getSavedFontSize();
+        changeTerminalFontSize(DEFAULT_FONT_SIZE - current);
+      }
+    }
+  });
 }
