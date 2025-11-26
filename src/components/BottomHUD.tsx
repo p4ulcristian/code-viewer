@@ -54,44 +54,65 @@ export function BottomHUD({
     groupRef.current.quaternion.copy(camera.quaternion);
   });
 
-  const buttonSpacing = 0.45;
+  const buttonGap = 0.15; // Gap between buttons
   const buttonHeight = 0.3;
-  const buttonWidth = 0.3;
+  const settingsWidth = 0.3;
+  const rootWidth = 0.4;
+
+  // Calculate widths for each breadcrumb
+  const breadcrumbWidths = currentPath.map(part => Math.max(0.4, part.length * 0.06));
+
+  // Calculate cumulative positions
+  let xOffset = 0;
+
+  // Settings button position (centered on its width)
+  const settingsX = xOffset + settingsWidth / 2;
+  xOffset += settingsWidth + buttonGap;
+
+  // Root button position
+  const rootX = xOffset + rootWidth / 2;
+  xOffset += rootWidth + buttonGap;
+
+  // Breadcrumb positions
+  const breadcrumbPositions = breadcrumbWidths.map(width => {
+    const pos = xOffset + width / 2;
+    xOffset += width + buttonGap;
+    return pos;
+  });
 
   return (
     <group ref={groupRef}>
       {/* Settings button with gear icon */}
       <HUDButton
-        position={[0, 0, 0]}
+        position={[settingsX, 0, 0]}
         onClick={onSettingsClick}
         label="⚙"
-        width={buttonWidth}
+        width={settingsWidth}
         height={buttonHeight}
         fontSize={0.15}
       />
 
       {/* Breadcrumbs */}
       <HUDButton
-        position={[buttonSpacing, 0, 0]}
+        position={[rootX, 0, 0]}
         onClick={() => onNavigate([])}
         isActive={currentPath.length === 0}
         label="root"
-        width={0.4}
+        width={rootWidth}
         height={buttonHeight}
         fontSize={0.09}
       />
 
       {currentPath.map((part, idx) => {
-        const xPosition = buttonSpacing + (idx + 1) * buttonSpacing;
         const isLast = idx === currentPath.length - 1;
         return (
           <HUDButton
             key={idx}
-            position={[xPosition, 0, 0]}
+            position={[breadcrumbPositions[idx], 0, 0]}
             onClick={() => onNavigate(currentPath.slice(0, idx + 1))}
             isActive={isLast}
             label={part}
-            width={Math.max(0.4, part.length * 0.06)}
+            width={breadcrumbWidths[idx]}
             height={buttonHeight}
             fontSize={0.09}
           />

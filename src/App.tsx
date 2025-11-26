@@ -163,26 +163,37 @@ interface GroupNodeProps {
 
 function GroupNode({ id, displayName, position, color, isSelected, onClick, file, code, childNamespaces, onPanelClick }: GroupNodeProps) {
   const meshRef = useRef<THREE.Mesh>(null);
+  const groupRef = useRef<THREE.Group>(null);
   const size = 2; // Same size for all
 
   // Only show code panel if this namespace has a real file
   const hasFile = file && code;
 
+  // Rotate the ball
+  useFrame((state) => {
+    if (meshRef.current) {
+      // Slow rotation on Y axis
+      meshRef.current.rotation.y += 0.005;
+      // Slight wobble on X axis
+      meshRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.5) * 0.1;
+    }
+  });
+
   return (
-    <group position={[position.x, position.y, position.z]}>
+    <group ref={groupRef} position={[position.x, position.y, position.z]}>
       <mesh ref={meshRef} onClick={onClick}>
-        <sphereGeometry args={[size, 64, 64]} />
+        <dodecahedronGeometry args={[size, 0]} />
         <meshStandardMaterial
           color={isSelected ? "#fbbf24" : color}
           emissive={isSelected ? "#fbbf24" : color}
-          emissiveIntensity={isSelected ? 0.4 : 0.15}
-          metalness={0.3}
-          roughness={0.4}
+          emissiveIntensity={isSelected ? 0.5 : 0.15}
+          metalness={isSelected ? 0.6 : 0.3}
+          roughness={isSelected ? 0.2 : 0.4}
         />
       </mesh>
       {/* Inner glow effect */}
       {isSelected && (
-        <pointLight position={[0, 0, 0]} intensity={1} distance={8} color="#fbbf24" />
+        <pointLight position={[0, 0, 2]} intensity={2} distance={10} color="#fbbf24" />
       )}
       <Text
         position={[0, size + 1.5, 0]}

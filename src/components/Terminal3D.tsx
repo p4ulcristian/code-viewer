@@ -57,6 +57,19 @@ export function Terminal3D({
   cwd,
   onFocus,
 }: Terminal3DProps) {
+  // Calculate cols/rows based on viewport aspect ratio
+  const fontSize = getSavedFontSize();
+  const charWidth = fontSize * 0.6;
+  const charHeight = fontSize * 1.2;
+
+  // Target a reasonable number of rows, calculate cols from aspect ratio
+  const targetRows = 40;
+  const viewportAspect = viewportWidth / viewportHeight;
+  const targetCols = Math.round(targetRows * viewportAspect * (charHeight / charWidth));
+
+  // Clamp to reasonable limits
+  const cols = Math.max(80, Math.min(300, targetCols));
+  const rows = targetRows;
   const meshRef = useRef<THREE.Mesh>(null);
   const materialRef = useRef<THREE.MeshBasicMaterial>(null);
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
@@ -97,14 +110,9 @@ export function Terminal3D({
     }
 
     // First time initialization for this ID
-    console.log(`[Terminal3D:${id}] Creating new terminal, cwd:`, cwd);
+    console.log(`[Terminal3D:${id}] Creating new terminal, cwd:`, cwd, `cols:`, cols, `rows:`, rows);
 
-    // Terminal dimensions - these need to match PTY server
-    const cols = 160;
-    const rows = 50;
-    const fontSize = getSavedFontSize();
-    const charWidth = fontSize * 0.6;
-    const charHeight = fontSize * 1.2;
+    // Terminal dimensions - calculated from viewport aspect ratio
     const containerWidth = Math.ceil(cols * charWidth) + 40;
     const containerHeight = Math.ceil(rows * charHeight) + 20;
 
@@ -243,7 +251,7 @@ export function Terminal3D({
     return () => {
       console.log(`[Terminal3D:${id}] Unmounting (keeping terminal alive)`);
     };
-  }, [id, wsUrl, cwd]);
+  }, [id, wsUrl, cwd, cols, rows, fontSize, charWidth, charHeight]);
 
   // Update texture every frame
   useFrame(() => {
@@ -353,9 +361,9 @@ export function changeTerminalFontSize(delta: number): number {
       instance.fontSize = newSize;
       instance.terminal.options.fontSize = newSize;
 
-      // Update container size
-      const cols = 160;
-      const rows = 50;
+      // Update container size using terminal's current dimensions
+      const cols = instance.terminal.cols;
+      const rows = instance.terminal.rows;
       const charWidth = newSize * 0.6;
       const charHeight = newSize * 1.2;
       const containerWidth = Math.ceil(cols * charWidth) + 40;
