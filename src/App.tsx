@@ -6,6 +6,8 @@ import { graphData } from "./graph-data";
 import { Terminal3D, focusTerminal } from "./components/Terminal3D";
 import { ProjectSetup } from "./components/ProjectSetup";
 import { HUD3D } from "./components/HUD3D";
+import { BottomHUD } from "./components/BottomHUD";
+import { HUDButton } from "./components/HUDButton";
 
 const STORAGE_KEY = 'ns-visualizer-project-path';
 const TERMINALS_STORAGE_KEY = 'ns-visualizer-terminals';
@@ -169,13 +171,19 @@ function GroupNode({ id, displayName, position, color, isSelected, onClick, file
   return (
     <group position={[position.x, position.y, position.z]}>
       <mesh ref={meshRef} onClick={onClick}>
-        <sphereGeometry args={[size, 32, 32]} />
+        <sphereGeometry args={[size, 64, 64]} />
         <meshStandardMaterial
           color={isSelected ? "#fbbf24" : color}
           emissive={isSelected ? "#fbbf24" : color}
-          emissiveIntensity={isSelected ? 0.3 : 0.1}
+          emissiveIntensity={isSelected ? 0.4 : 0.15}
+          metalness={0.3}
+          roughness={0.4}
         />
       </mesh>
+      {/* Inner glow effect */}
+      {isSelected && (
+        <pointLight position={[0, 0, 0]} intensity={1} distance={8} color="#fbbf24" />
+      )}
       <Text
         position={[0, size + 1.5, 0]}
         fontSize={2}
@@ -270,7 +278,9 @@ interface SceneProps {
   isPanelView: boolean;
   onPanelViewChange: (isPanelView: boolean) => void;
   showTerminal: boolean;
-  onShowTerminalChange: (show: boolean) => void;
+  onOpenTerminal: () => void;
+  onCloseTerminalView: () => void;
+  onSettingsClick: () => void;
   projectPath: string | null;
   terminals: string[]; // List of terminal IDs
   activeTerminal: number; // Index of active terminal
@@ -461,102 +471,111 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, s
   );
 }
 
-// 3D Terminal button component with hover and active animations
-function TerminalButton({
-  position,
-  onClick,
-  isActive,
-  isAddButton = false,
-  isCloseButton = false,
-  children
+// Terminal buttons HUD - follows camera, sticks to left side of viewport
+function TerminalButtonsHUD({
+  terminals,
+  activeTerminal,
+  onAddTerminal,
+  onSelectTerminal,
+  onCloseTerminal,
 }: {
-  position: [number, number, number];
-  onClick: () => void;
-  isActive: boolean;
-  isAddButton?: boolean;
-  isCloseButton?: boolean;
-  children: React.ReactNode;
+  terminals: string[];
+  activeTerminal: number;
+  onAddTerminal: () => void;
+  onSelectTerminal: (index: number) => void;
+  onCloseTerminal: (index: number) => void;
 }) {
   const groupRef = useRef<THREE.Group>(null);
-  const [hovered, setHovered] = useState(false);
+  const { camera, size } = useThree();
 
-  // Animate the button - swing rotation for active
-  useFrame((state) => {
+  // Follow camera every frame
+  useFrame(() => {
     if (!groupRef.current) return;
 
-    if (isActive) {
-      // Gentle swing animation (rotate around Y axis)
-      groupRef.current.rotation.y = Math.sin(state.clock.elapsedTime * 2) * 0.15;
-    } else {
-      // Reset rotation when not active
-      groupRef.current.rotation.y *= 0.9;
-    }
+    const perspCamera = camera as THREE.PerspectiveCamera;
 
-    // Scale on hover
-    const targetScale = hovered ? 1.15 : 1;
-    groupRef.current.scale.setScalar(
-      groupRef.current.scale.x + (targetScale - groupRef.current.scale.x) * 0.1
-    );
+    // Calculate viewport size at HUD distance
+    const hudDistance = 10;
+    const vFov = perspCamera.fov * (Math.PI / 180);
+    const viewportHeight = 2 * Math.tan(vFov / 2) * hudDistance;
+    const viewportWidth = viewportHeight * (size.width / size.height);
+
+    // Get camera's local axes from its matrix
+    const cameraMatrix = perspCamera.matrixWorld;
+    const right = new THREE.Vector3().setFromMatrixColumn(cameraMatrix, 0); // X axis
+    const up = new THREE.Vector3().setFromMatrixColumn(cameraMatrix, 1);    // Y axis
+    const forward = new THREE.Vector3().setFromMatrixColumn(cameraMatrix, 2).negate(); // -Z axis
+
+    // Get camera position
+    const cameraPosition = new THREE.Vector3().setFromMatrixPosition(cameraMatrix);
+
+    // Position HUD in front of camera
+    const hudPosition = cameraPosition.clone().add(forward.clone().multiplyScalar(hudDistance));
+
+    // Move to left edge of viewport and top
+    hudPosition.add(right.clone().multiplyScalar(-viewportWidth / 2 + 0.5));
+    hudPosition.add(up.clone().multiplyScalar(viewportHeight / 2 - 0.5));
+
+    // Smooth follow (lerp)
+    groupRef.current.position.lerp(hudPosition, 0.2);
+
+    // Copy camera rotation so HUD is always flat facing the camera
+    groupRef.current.quaternion.copy(camera.quaternion);
   });
 
-  const baseColor = isCloseButton ? "#ef4444" : (isAddButton ? "#10b981" : (isActive ? "#3b82f6" : "#4b5563"));
-  const edgeColor = isCloseButton ? "#b91c1c" : (isAddButton ? "#059669" : (isActive ? "#1d4ed8" : "#1f2937"));
+  const buttonSpacing = 0.55;
+  const buttonSize = 0.4;
 
   return (
-    <group position={position}>
-      <group ref={groupRef}>
-        {/* Main button face */}
-        <mesh
-          position={[0, 0, 0.1]}
-          onClick={(e) => { e.stopPropagation(); onClick(); }}
-          onPointerEnter={() => setHovered(true)}
-          onPointerLeave={() => setHovered(false)}
-        >
-          <boxGeometry args={[0.85, 0.85, 0.08]} />
-          <meshStandardMaterial
-            color={baseColor}
-            emissive={baseColor}
-            emissiveIntensity={isActive ? 0.3 : (hovered ? 0.2 : 0.1)}
-            metalness={0.2}
-            roughness={0.5}
+    <group ref={groupRef}>
+      {/* Add terminal button - at top */}
+      <HUDButton
+        position={[0, 0, 0]}
+        onClick={onAddTerminal}
+        isActive={false}
+        isAddButton
+        label="+"
+        width={buttonSize}
+        height={buttonSize}
+        fontSize={0.2}
+      />
+
+      {/* Terminal number buttons - vertical column */}
+      {terminals.map((_, index) => {
+        const yPosition = -(index + 1) * buttonSpacing;
+        const isActive = index === activeTerminal;
+        return (
+          <HUDButton
+            key={index}
+            position={[0, yPosition, 0]}
+            onClick={() => onSelectTerminal(index)}
+            isActive={isActive}
+            label={String(index + 1)}
+            width={buttonSize}
+            height={buttonSize}
+            fontSize={0.18}
           />
-        </mesh>
-        {/* Darker edge/frame */}
-        <mesh
-          position={[0, 0, 0]}
-          onClick={(e) => { e.stopPropagation(); onClick(); }}
-          onPointerEnter={() => setHovered(true)}
-          onPointerLeave={() => setHovered(false)}
-        >
-          <boxGeometry args={[0.95, 0.95, 0.15]} />
-          <meshStandardMaterial
-            color={edgeColor}
-            metalness={0.4}
-            roughness={0.3}
-          />
-        </mesh>
-        {/* Text on front face - always visible */}
-        <Text
-          position={[0, 0, 0.15]}
-          fontSize={0.35}
-          color="white"
-          anchorX="center"
-          anchorY="middle"
-          outlineWidth={0.02}
-          outlineColor="#000000"
-        >
-          {children}
-        </Text>
-        {/* Glow indicator for active button */}
-        {isActive && (
-          <pointLight position={[0, 0, 0.3]} intensity={0.5} distance={2} color="#60a5fa" />
-        )}
-      </group>
+        );
+      })}
+
+      {/* Close button - at bottom, only if more than 1 terminal */}
+      {terminals.length > 1 && (
+        <HUDButton
+          position={[0, -(terminals.length + 1) * buttonSpacing, 0]}
+          onClick={() => onCloseTerminal(activeTerminal)}
+          isActive={false}
+          isCloseButton
+          label="×"
+          width={buttonSize}
+          height={buttonSize}
+          fontSize={0.2}
+        />
+      )}
     </group>
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, onShowTerminalChange, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange, skipInitialAnimation }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, onOpenTerminal, onCloseTerminalView, onSettingsClick, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange, skipInitialAnimation }: SceneProps) {
   const { camera, size } = useThree();
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
@@ -700,8 +719,15 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
       {/* 3D HUD - follows camera */}
       <HUD3D
         showTerminal={showTerminal}
-        onTerminalClick={() => onShowTerminalChange(true)}
-        onWorkspaceClick={() => onShowTerminalChange(false)}
+        onTerminalClick={onOpenTerminal}
+        onWorkspaceClick={onCloseTerminalView}
+      />
+
+      {/* Bottom HUD - settings and breadcrumbs */}
+      <BottomHUD
+        currentPath={currentPath}
+        onNavigate={onNavigate}
+        onSettingsClick={onSettingsClick}
       />
 
       {/* Terminal panels - each positioned below the previous one */}
@@ -721,76 +747,16 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         );
       })}
 
-      {/* Terminal navigation buttons - horizontal, above the terminal */}
-      {showTerminal && (() => {
-        const TERMINAL_SPACING = terminalViewportHeight + 5;
-        const activeY = -activeTerminal * TERMINAL_SPACING;
-
-        // Calculate actual terminal plane dimensions (matching Terminal3D logic)
-        // Terminal canvas: 160 cols * 9.6px wide, 50 rows * 19.2px tall (fontSize 16)
-        const terminalCanvasWidth = 160 * 9.6 + 40; // cols * charWidth + padding
-        const terminalCanvasHeight = 50 * 19.2 + 20; // rows * charHeight + padding
-        const canvasAspect = terminalCanvasWidth / terminalCanvasHeight;
-        const viewportAspect = terminalViewportWidth / terminalViewportHeight;
-        const paddingFactor = 0.9;
-
-        let actualPlaneWidth: number;
-        let actualPlaneHeight: number;
-        if (canvasAspect > viewportAspect) {
-          actualPlaneWidth = terminalViewportWidth * paddingFactor;
-          actualPlaneHeight = actualPlaneWidth / canvasAspect;
-        } else {
-          actualPlaneHeight = terminalViewportHeight * paddingFactor;
-          actualPlaneWidth = actualPlaneHeight * canvasAspect;
-        }
-
-        // Position above terminal
-        const topY = actualPlaneHeight / 2 + 1.2;
-        // Align to left edge of terminal
-        const terminalLeftEdge = -80 - actualPlaneWidth / 2 + 0.5;
-
-        return (
-          <group position={[terminalLeftEdge, activeY + topY, 30]}>
-            {/* Add terminal button */}
-            <TerminalButton
-              position={[0, 0, 0]}
-              onClick={onAddTerminal}
-              isActive={false}
-              isAddButton
-            >
-              +
-            </TerminalButton>
-
-            {/* Terminal number buttons - horizontal row */}
-            {terminals.map((_, index) => {
-              const xPosition = (index + 1) * 1.2;
-              const isActive = index === activeTerminal;
-              return (
-                <TerminalButton
-                  key={index}
-                  position={[xPosition, 0, 0]}
-                  onClick={() => onSelectTerminal(index)}
-                  isActive={isActive}
-                >
-                  {index + 1}
-                </TerminalButton>
-              );
-            })}
-
-            {/* Close button - on the right side, only if more than 1 terminal */}
-            {terminals.length > 1 && (
-              <TerminalButton
-                position={[actualPlaneWidth - 1, 0, 0]}
-                onClick={() => onCloseTerminal(activeTerminal)}
-                isActive={false}
-                isCloseButton
-              >
-                ×
-              </TerminalButton>
-            )}
-          </group>
-        );
-      })()}
+      {/* Terminal navigation buttons - vertical, sticks to left of viewport */}
+      {showTerminal && (
+        <TerminalButtonsHUD
+          terminals={terminals}
+          activeTerminal={activeTerminal}
+          onAddTerminal={onAddTerminal}
+          onSelectTerminal={onSelectTerminal}
+          onCloseTerminal={onCloseTerminal}
+        />
+      )}
     </>
   );
 }
@@ -1226,19 +1192,28 @@ export default function App() {
   }, [terminalSpacing]);
 
 
+  const openTerminal = useCallback(() => {
+    if (showTerminal) return; // Already open
+    // Save current camera and focus on active terminal
+    prevCameraTargetRef.current = cameraTarget;
+    setCameraTarget(getTerminalPosition(activeTerminal));
+    setShowTerminal(true);
+  }, [showTerminal, cameraTarget, activeTerminal, getTerminalPosition]);
+
+  const closeTerminalView = useCallback(() => {
+    if (!showTerminal) return; // Already closed
+    // Restore previous camera
+    setCameraTarget(prevCameraTargetRef.current);
+    setShowTerminal(false);
+  }, [showTerminal]);
+
   const toggleTerminal = useCallback(() => {
-    setShowTerminal(prev => {
-      if (!prev) {
-        // Opening terminal - save current camera and focus on active terminal
-        prevCameraTargetRef.current = cameraTarget;
-        setCameraTarget(getTerminalPosition(activeTerminal));
-      } else {
-        // Closing terminal - restore previous camera
-        setCameraTarget(prevCameraTargetRef.current);
-      }
-      return !prev;
-    });
-  }, [cameraTarget, activeTerminal, getTerminalPosition]);
+    if (showTerminal) {
+      closeTerminalView();
+    } else {
+      openTerminal();
+    }
+  }, [showTerminal, openTerminal, closeTerminalView]);
 
   const handleAddTerminal = useCallback(() => {
     terminalCounterRef.current += 1;
@@ -1470,7 +1445,9 @@ export default function App() {
           isPanelView={isPanelView}
           onPanelViewChange={handlePanelViewChange}
           showTerminal={showTerminal}
-          onShowTerminalChange={setShowTerminal}
+          onOpenTerminal={openTerminal}
+          onCloseTerminalView={closeTerminalView}
+          onSettingsClick={() => setShowProjectSetup(true)}
           projectPath={projectPath}
           terminals={terminals}
           activeTerminal={activeTerminal}
@@ -1481,124 +1458,6 @@ export default function App() {
           skipInitialAnimation={savedNavState !== null}
         />
       </Canvas>
-
-      {/* Bottom bar with all controls */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: 0,
-          left: 0,
-          right: 0,
-          zIndex: 1000,
-          display: "flex",
-          alignItems: "center",
-          gap: "16px",
-          padding: "12px 16px",
-          background: "rgba(0,0,0,0.7)",
-          borderTop: "1px solid rgba(255,255,255,0.1)",
-        }}
-      >
-        {/* Project button */}
-        <button
-          onClick={() => setShowProjectSetup(true)}
-          style={{
-            background: "rgba(255,255,255,0.1)",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            padding: "6px 12px",
-            cursor: "pointer",
-            fontSize: "12px",
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-          }}
-        >
-          <span>📁</span>
-          Project
-        </button>
-
-        {/* Breadcrumb */}
-        <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", flex: 1 }}>
-          <button
-            onClick={() => setCurrentPath([])}
-            style={{
-              background: currentPath.length === 0 ? "#3b82f6" : "rgba(255,255,255,0.1)",
-              color: "white",
-              border: "none",
-              borderRadius: "4px",
-              padding: "6px 10px",
-              cursor: "pointer",
-              fontSize: "12px",
-            }}
-          >
-            root
-          </button>
-          {currentPath.map((part, idx) => (
-            <span key={idx} style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-              <span style={{ color: "#64748b" }}>/</span>
-              <button
-                onClick={() => setCurrentPath(currentPath.slice(0, idx + 1))}
-                style={{
-                  background: idx === currentPath.length - 1 ? "#3b82f6" : "rgba(255,255,255,0.1)",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "4px",
-                  padding: "6px 10px",
-                  cursor: "pointer",
-                  fontSize: "12px",
-                }}
-              >
-                {part}
-              </button>
-            </span>
-          ))}
-        </div>
-
-        {/* clj-kondo status */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
-          {kondoRunning ? (
-            <span style={{ color: "#fbbf24" }}>clj-kondo...</span>
-          ) : kondoResults ? (
-            <>
-              <span style={{ color: kondoResults.summary?.error > 0 ? "#f87171" : kondoResults.summary?.warning > 0 ? "#fbbf24" : "#4ade80" }}>
-                clj-kondo:
-              </span>
-              {kondoResults.summary?.error > 0 && (
-                <span style={{ color: "#f87171" }}>{kondoResults.summary.error}E</span>
-              )}
-              {kondoResults.summary?.warning > 0 && (
-                <span style={{ color: "#fbbf24" }}>{kondoResults.summary.warning}W</span>
-              )}
-              {!kondoResults.summary?.error && !kondoResults.summary?.warning && (
-                <span style={{ color: "#4ade80" }}>OK</span>
-              )}
-            </>
-          ) : (
-            <span style={{ color: "#64748b" }}>clj-kondo</span>
-          )}
-        </div>
-
-        {/* Terminal toggle button */}
-        <button
-          onClick={toggleTerminal}
-          style={{
-            background: showTerminal ? "#3b82f6" : "rgba(255,255,255,0.1)",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            padding: "6px 12px",
-            cursor: "pointer",
-            fontSize: "12px",
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-          }}
-        >
-          <span style={{ fontFamily: "monospace" }}>&gt;_</span>
-          Terminal
-        </button>
-      </div>
 
       {/* Project setup modal */}
       {showProjectSetup && (

@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -58,6 +58,9 @@ function startPtyServer() {
 }
 
 app.whenReady().then(() => {
+  // Remove menu bar
+  Menu.setApplicationMenu(null);
+
   startPtyServer();
 
   // Give PTY server a moment to start
