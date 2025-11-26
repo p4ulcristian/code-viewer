@@ -54,9 +54,9 @@ export function BottomHUD({
     groupRef.current.quaternion.copy(camera.quaternion);
   });
 
-  const buttonSpacing = 0.6;
-  const buttonHeight = 0.4;
-  const buttonWidth = 0.4;
+  const buttonSpacing = 0.45;
+  const buttonHeight = 0.3;
+  const buttonWidth = 0.3;
 
   return (
     <group ref={groupRef}>
@@ -67,7 +67,7 @@ export function BottomHUD({
         label="⚙"
         width={buttonWidth}
         height={buttonHeight}
-        fontSize={0.2}
+        fontSize={0.15}
       />
 
       {/* Breadcrumbs */}
@@ -76,9 +76,9 @@ export function BottomHUD({
         onClick={() => onNavigate([])}
         isActive={currentPath.length === 0}
         label="root"
-        width={0.5}
+        width={0.4}
         height={buttonHeight}
-        fontSize={0.12}
+        fontSize={0.09}
       />
 
       {currentPath.map((part, idx) => {
@@ -91,9 +91,9 @@ export function BottomHUD({
             onClick={() => onNavigate(currentPath.slice(0, idx + 1))}
             isActive={isLast}
             label={part}
-            width={Math.max(0.5, part.length * 0.08)}
+            width={Math.max(0.4, part.length * 0.06)}
             height={buttonHeight}
-            fontSize={0.12}
+            fontSize={0.09}
           />
         );
       })}

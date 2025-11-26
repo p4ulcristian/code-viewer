@@ -1,6 +1,6 @@
 import { useRef, useMemo, useState, useCallback, useEffect } from "react";
 import { Canvas, useThree, useFrame } from "@react-three/fiber";
-import { OrbitControls, Text } from "@react-three/drei";
+import { OrbitControls, Text, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import { graphData } from "./graph-data";
 import { Terminal3D, focusTerminal } from "./components/Terminal3D";
@@ -287,7 +287,7 @@ interface SceneProps {
   onAddTerminal: () => void;
   onSelectTerminal: (index: number) => void;
   onCloseTerminal: (index: number) => void;
-  onTerminalSpacingChange: (spacing: number) => void;
+  onTerminalSpacingChange: (spacing: { width: number; height: number }) => void;
   skipInitialAnimation?: boolean;
 }
 
@@ -471,6 +471,80 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, s
   );
 }
 
+// Debug frame that follows camera and shows actual viewport boundaries
+function DebugViewportFrame() {
+  const groupRef = useRef<THREE.Group>(null);
+  const { camera, size } = useThree();
+
+  useFrame(() => {
+    if (!groupRef.current) return;
+
+    const perspCamera = camera as THREE.PerspectiveCamera;
+    const vFov = perspCamera.fov * (Math.PI / 180);
+    const aspect = size.width / size.height;
+
+    // Get camera position and direction
+    const cameraMatrix = perspCamera.matrixWorld;
+    const forward = new THREE.Vector3().setFromMatrixColumn(cameraMatrix, 2).negate();
+    const cameraPosition = new THREE.Vector3().setFromMatrixPosition(cameraMatrix);
+
+    // Place frame at a fixed distance in front of camera
+    const frameDistance = 10;
+    const framePosition = cameraPosition.clone().add(forward.clone().multiplyScalar(frameDistance));
+
+    // Calculate viewport size at this distance
+    const viewportHeight = 2 * Math.tan(vFov / 2) * frameDistance;
+    const viewportWidth = viewportHeight * aspect;
+
+    groupRef.current.position.copy(framePosition);
+    groupRef.current.quaternion.copy(camera.quaternion);
+
+    // Update geometry to match viewport
+    const greenGeo = groupRef.current.children[0]?.children[0] as THREE.LineSegments;
+    const redGeo = groupRef.current.children[1]?.children[0] as THREE.LineSegments;
+
+    if (greenGeo) {
+      greenGeo.geometry.dispose();
+      greenGeo.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(viewportWidth, viewportHeight));
+    }
+
+    // Red frame with HUD margins
+    const HUD_MARGIN_TOP = 1.2;
+    const HUD_MARGIN_BOTTOM = 1.0;
+    const HUD_MARGIN_LEFT = 0.8;
+    const HUD_MARGIN_RIGHT = 0.3;
+    const usableWidth = viewportWidth - HUD_MARGIN_LEFT - HUD_MARGIN_RIGHT;
+    const usableHeight = viewportHeight - HUD_MARGIN_TOP - HUD_MARGIN_BOTTOM;
+    const offsetX = (HUD_MARGIN_LEFT - HUD_MARGIN_RIGHT) / 2;
+    const offsetY = (HUD_MARGIN_BOTTOM - HUD_MARGIN_TOP) / 2;
+
+    if (redGeo) {
+      redGeo.geometry.dispose();
+      redGeo.geometry = new THREE.EdgesGeometry(new THREE.PlaneGeometry(usableWidth, usableHeight));
+      redGeo.position.set(offsetX, offsetY, 0.01);
+    }
+  });
+
+  return (
+    <group ref={groupRef}>
+      {/* Green - full viewport */}
+      <group>
+        <lineSegments>
+          <edgesGeometry args={[new THREE.PlaneGeometry(1, 1)]} />
+          <lineBasicMaterial color="#00ff00" />
+        </lineSegments>
+      </group>
+      {/* Red - usable area after HUD margins */}
+      <group>
+        <lineSegments>
+          <edgesGeometry args={[new THREE.PlaneGeometry(1, 1)]} />
+          <lineBasicMaterial color="#ff0000" />
+        </lineSegments>
+      </group>
+    </group>
+  );
+}
+
 // Terminal buttons HUD - follows camera, sticks to left side of viewport
 function TerminalButtonsHUD({
   terminals,
@@ -513,7 +587,7 @@ function TerminalButtonsHUD({
     const hudPosition = cameraPosition.clone().add(forward.clone().multiplyScalar(hudDistance));
 
     // Move to left edge of viewport and top
-    hudPosition.add(right.clone().multiplyScalar(-viewportWidth / 2 + 0.5));
+    hudPosition.add(right.clone().multiplyScalar(-viewportWidth / 2 + 0.35));
     hudPosition.add(up.clone().multiplyScalar(viewportHeight / 2 - 0.5));
 
     // Smooth follow (lerp)
@@ -523,8 +597,8 @@ function TerminalButtonsHUD({
     groupRef.current.quaternion.copy(camera.quaternion);
   });
 
-  const buttonSpacing = 0.55;
-  const buttonSize = 0.4;
+  const buttonSpacing = 0.5;
+  const buttonSize = 0.3;
 
   return (
     <group ref={groupRef}>
@@ -537,7 +611,7 @@ function TerminalButtonsHUD({
         label="+"
         width={buttonSize}
         height={buttonSize}
-        fontSize={0.2}
+        fontSize={0.15}
       />
 
       {/* Terminal number buttons - vertical column */}
@@ -553,7 +627,7 @@ function TerminalButtonsHUD({
             label={String(index + 1)}
             width={buttonSize}
             height={buttonSize}
-            fontSize={0.18}
+            fontSize={0.12}
           />
         );
       })}
@@ -568,7 +642,7 @@ function TerminalButtonsHUD({
           label="×"
           width={buttonSize}
           height={buttonSize}
-          fontSize={0.2}
+          fontSize={0.15}
         />
       )}
     </group>
@@ -581,23 +655,61 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
   const prefix = currentPath.join(".");
   const prevPositionRef = useRef<{ x: number; y: number; z: number } | null>(null);
 
-  // Calculate terminal viewport size for filling the screen
-  // Camera will be positioned to fit panelWidth (20) in view - matches CameraController logic
-  const TERMINAL_PANEL_WIDTH = 20; // Panel width used for camera distance calc
+  // Calculate terminal viewport size to fit within HUD frame
+  // HUD margins in viewport-relative units (at distance 10 from camera)
+  const HUD_MARGIN_TOP = 1.2;    // Space for top HUD buttons
+  const HUD_MARGIN_BOTTOM = 1.0; // Space for bottom HUD buttons
+  const HUD_MARGIN_LEFT = 0.8;   // Space for left terminal buttons
+  const HUD_MARGIN_RIGHT = 0.3;  // Small right margin
+
   const vFov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
   const aspect = size.width / size.height;
+
+  // The camera will be positioned so the terminal fills the viewport
+  // We use the CameraController's panelWidth logic, so we need to calculate
+  // the terminal size that will fit in the usable area
+
+  // At the HUD distance (10), calculate the full viewport
+  const hudDistance = 10;
+  const fullViewportHeightAtHud = 2 * Math.tan(vFov / 2) * hudDistance;
+  const fullViewportWidthAtHud = fullViewportHeightAtHud * aspect;
+
+  // Usable area at HUD distance
+  const usableWidthAtHud = fullViewportWidthAtHud - HUD_MARGIN_LEFT - HUD_MARGIN_RIGHT;
+  const usableHeightAtHud = fullViewportHeightAtHud - HUD_MARGIN_TOP - HUD_MARGIN_BOTTOM;
+
+  // The terminal plane will be at z=30, camera zooms to fit panelWidth=20
+  // We need to scale the terminal to match the usable area ratio
+  const TERMINAL_PANEL_WIDTH = 20; // This determines camera distance
   const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
-  // Distance camera will be at when viewing terminal (matches CameraController logic)
   const terminalCameraDistance = (TERMINAL_PANEL_WIDTH / 2) / Math.tan(hFov / 2) / 0.85;
-  // Viewport dimensions at that distance
-  const terminalViewportHeight = 2 * Math.tan(vFov / 2) * terminalCameraDistance;
-  const terminalViewportWidth = terminalViewportHeight * aspect;
+
+  // At that camera distance, calculate viewport size
+  const fullViewportHeight = 2 * Math.tan(vFov / 2) * terminalCameraDistance;
+  const fullViewportWidth = fullViewportHeight * aspect;
+
+  // Scale the margins proportionally to the camera distance
+  const distanceRatio = terminalCameraDistance / hudDistance;
+  const scaledMarginTop = HUD_MARGIN_TOP * distanceRatio;
+  const scaledMarginBottom = HUD_MARGIN_BOTTOM * distanceRatio;
+  const scaledMarginLeft = HUD_MARGIN_LEFT * distanceRatio;
+  const scaledMarginRight = HUD_MARGIN_RIGHT * distanceRatio;
+
+  // Usable viewport after HUD margins (scaled to camera distance)
+  const terminalViewportHeight = fullViewportHeight - scaledMarginTop - scaledMarginBottom;
+  const terminalViewportWidth = fullViewportWidth - scaledMarginLeft - scaledMarginRight;
+
+  // Grid spacing for 2×N layout - add gap between terminals
+  const TERMINAL_GAP = 2;
+  const calculatedTerminalSpacing = {
+    width: terminalViewportWidth + TERMINAL_GAP,
+    height: terminalViewportHeight + TERMINAL_GAP,
+  };
 
   // Report terminal spacing to parent
-  const calculatedTerminalSpacing = terminalViewportHeight + 5;
   useEffect(() => {
     onTerminalSpacingChange(calculatedTerminalSpacing);
-  }, [calculatedTerminalSpacing, onTerminalSpacingChange]);
+  }, [calculatedTerminalSpacing.width, calculatedTerminalSpacing.height, onTerminalSpacingChange]);
 
   const groups = useMemo(() => {
     if (currentPath.length === 0) {
@@ -684,9 +796,11 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
 
   return (
     <>
-      <ambientLight intensity={0.5} />
-      <pointLight position={[50, 50, 50]} intensity={1} />
-      <pointLight position={[-50, -50, -50]} intensity={0.5} />
+      {/* HDRI Environment for realistic lighting and reflections */}
+      <Environment preset="night" background={false} />
+      <ambientLight intensity={0.3} />
+      <pointLight position={[50, 50, 50]} intensity={0.8} />
+      <pointLight position={[-50, -50, -50]} intensity={0.4} />
 
 
       <group>
@@ -730,15 +844,24 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         onSettingsClick={onSettingsClick}
       />
 
-      {/* Terminal panels - each positioned below the previous one */}
+      {/* Debug frame - follows camera to show actual viewport boundaries */}
+      {showTerminal && <DebugViewportFrame />}
+
+      {/* Terminal panels - 2×N grid layout */}
       {showTerminal && terminals.map((terminalId, index) => {
-        const TERMINAL_SPACING = terminalViewportHeight + 5;
-        const yPosition = -index * TERMINAL_SPACING;
+        const TERMINAL_GRID_COLS = 2;
+        const col = index % TERMINAL_GRID_COLS;
+        const row = Math.floor(index / TERMINAL_GRID_COLS);
+        // Offset terminal to center within usable area (asymmetric margins)
+        const terminalOffsetX = (scaledMarginLeft - scaledMarginRight) / 2;
+        const terminalOffsetY = (scaledMarginBottom - scaledMarginTop) / 2;
+        const xPosition = -80 + col * calculatedTerminalSpacing.width + terminalOffsetX;
+        const yPosition = -row * calculatedTerminalSpacing.height + terminalOffsetY;
         return (
           <Terminal3D
             key={terminalId}
             id={terminalId}
-            position={[-80, yPosition, 30]}
+            position={[xPosition, yPosition, 30]}
             viewportWidth={terminalViewportWidth}
             viewportHeight={terminalViewportHeight}
             cwd={projectPath ?? undefined}
@@ -1146,16 +1269,21 @@ export default function App() {
     localStorage.setItem(NAV_STATE_STORAGE_KEY, JSON.stringify(navState));
   }, [showTerminal, activeTerminal, currentPath, selectedGroup, isPanelView]);
 
-  // Terminal base position - z is set to trigger close camera view
+  // Terminal grid layout - 2 columns
+  const TERMINAL_GRID_COLS = 2;
   const TERMINAL_BASE_POSITION = { x: -80, y: 0, z: 30 };
-  // Terminal spacing - will be set by Scene component
-  const [terminalSpacing, setTerminalSpacing] = useState(25);
+  // Terminal spacing - will be set by Scene component (includes gap between terminals)
+  const [terminalSpacing, setTerminalSpacing] = useState({ width: 35, height: 25 });
 
-  const getTerminalPosition = useCallback((index: number) => ({
-    x: TERMINAL_BASE_POSITION.x,
-    y: -index * terminalSpacing,
-    z: TERMINAL_BASE_POSITION.z,
-  }), [terminalSpacing]);
+  const getTerminalGridPosition = useCallback((index: number) => {
+    const col = index % TERMINAL_GRID_COLS;
+    const row = Math.floor(index / TERMINAL_GRID_COLS);
+    return {
+      x: TERMINAL_BASE_POSITION.x + col * terminalSpacing.width,
+      y: -row * terminalSpacing.height,
+      z: TERMINAL_BASE_POSITION.z,
+    };
+  }, [terminalSpacing]);
 
   // Set initial camera position based on saved state (after mount)
   const initializedRef = useRef(false);
@@ -1166,12 +1294,8 @@ export default function App() {
     if (showTerminal) {
       // Delay to ensure Scene has set terminalSpacing
       const timer = setTimeout(() => {
-        // Use the base position directly since spacing might not be updated yet
-        setCameraTarget({
-          x: TERMINAL_BASE_POSITION.x,
-          y: -activeTerminal * terminalSpacing,
-          z: TERMINAL_BASE_POSITION.z,
-        });
+        // Use the grid position
+        setCameraTarget(getTerminalGridPosition(activeTerminal));
         // Focus the terminal
         if (terminals[activeTerminal]) {
           focusTerminal(terminals[activeTerminal]);
@@ -1188,7 +1312,7 @@ export default function App() {
     spacingInitializedRef.current = true;
 
     // Re-position camera with correct spacing
-    setCameraTarget(getTerminalPosition(activeTerminal));
+    setCameraTarget(getTerminalGridPosition(activeTerminal));
   }, [terminalSpacing]);
 
 
@@ -1196,9 +1320,9 @@ export default function App() {
     if (showTerminal) return; // Already open
     // Save current camera and focus on active terminal
     prevCameraTargetRef.current = cameraTarget;
-    setCameraTarget(getTerminalPosition(activeTerminal));
+    setCameraTarget(getTerminalGridPosition(activeTerminal));
     setShowTerminal(true);
-  }, [showTerminal, cameraTarget, activeTerminal, getTerminalPosition]);
+  }, [showTerminal, cameraTarget, activeTerminal, getTerminalGridPosition]);
 
   const closeTerminalView = useCallback(() => {
     if (!showTerminal) return; // Already closed
@@ -1221,17 +1345,17 @@ export default function App() {
     setTerminals(prev => [...prev, newId]);
     const newIndex = terminals.length;
     setActiveTerminal(newIndex);
-    setCameraTarget(getTerminalPosition(newIndex));
+    setCameraTarget(getTerminalGridPosition(newIndex));
     // Focus the new terminal after a short delay
     setTimeout(() => focusTerminal(newId), 200);
-  }, [terminals.length, getTerminalPosition]);
+  }, [terminals.length, getTerminalGridPosition]);
 
   const handleSelectTerminal = useCallback((index: number) => {
     setActiveTerminal(index);
-    setCameraTarget(getTerminalPosition(index));
+    setCameraTarget(getTerminalGridPosition(index));
     // Focus the selected terminal
     setTimeout(() => focusTerminal(terminals[index]), 100);
-  }, [terminals, getTerminalPosition]);
+  }, [terminals, getTerminalGridPosition]);
 
   const handleCloseTerminal = useCallback((index: number) => {
     if (terminals.length <= 1) return; // Don't close the last terminal
@@ -1242,9 +1366,9 @@ export default function App() {
     if (index <= activeTerminal) {
       const newActive = Math.max(0, activeTerminal - 1);
       setActiveTerminal(newActive);
-      setCameraTarget(getTerminalPosition(newActive));
+      setCameraTarget(getTerminalGridPosition(newActive));
     }
-  }, [terminals.length, activeTerminal, getTerminalPosition]);
+  }, [terminals.length, activeTerminal, getTerminalGridPosition]);
 
   const handleNavigate = useCallback((path: string[]) => {
     setCurrentPath(path);

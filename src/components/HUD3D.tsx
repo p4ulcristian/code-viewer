@@ -54,24 +54,24 @@ export function HUD3D({
     <group ref={groupRef}>
       {/* Workspace Button - positioned left of center */}
       <HUDButton
-        position={[-0.55, 0, 0]}
+        position={[-0.4, 0, 0]}
         onClick={onWorkspaceClick}
         isActive={!showTerminal}
         label="Workspace"
-        width={0.9}
-        height={0.5}
-        fontSize={0.15}
+        width={0.7}
+        height={0.35}
+        fontSize={0.11}
       />
 
       {/* Terminal Button - positioned right of center */}
       <HUDButton
-        position={[0.55, 0, 0]}
+        position={[0.4, 0, 0]}
         onClick={onTerminalClick}
         isActive={showTerminal}
         label="Terminal"
-        width={0.8}
-        height={0.5}
-        fontSize={0.15}
+        width={0.6}
+        height={0.35}
+        fontSize={0.11}
       />
     </group>
   );

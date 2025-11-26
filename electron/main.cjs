@@ -66,6 +66,30 @@ app.whenReady().then(() => {
   // Give PTY server a moment to start
   setTimeout(() => {
     createWindow();
+
+    // Register keyboard shortcuts via before-input-event
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      // F5 - reload
+      if (input.key === 'F5') {
+        mainWindow.webContents.reload();
+        event.preventDefault();
+      }
+      // Ctrl+R - reload
+      if (input.control && input.key === 'r') {
+        mainWindow.webContents.reload();
+        event.preventDefault();
+      }
+      // Ctrl+Shift+R - hard reload
+      if (input.control && input.shift && input.key === 'R') {
+        mainWindow.webContents.reloadIgnoringCache();
+        event.preventDefault();
+      }
+      // F12 - toggle devtools
+      if (input.key === 'F12') {
+        mainWindow.webContents.toggleDevTools();
+        event.preventDefault();
+      }
+    });
   }, 500);
 
   app.on('activate', () => {

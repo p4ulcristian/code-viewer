@@ -14,6 +14,7 @@ interface Terminal3DProps {
   wsUrl?: string;
   cwd?: string;
   onFocus?: () => void;
+  followCamera?: boolean; // If true, terminal sticks to camera viewport
 }
 
 // Store for multiple terminal instances
