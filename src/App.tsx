@@ -7,6 +7,17 @@ import { Terminal3D, focusTerminal } from "./components/Terminal3D";
 import { ProjectSetup } from "./components/ProjectSetup";
 
 const STORAGE_KEY = 'ns-visualizer-project-path';
+const TERMINALS_STORAGE_KEY = 'ns-visualizer-terminals';
+const NAV_STATE_STORAGE_KEY = 'ns-visualizer-nav-state';
+
+// Navigation state interface
+interface NavState {
+  showTerminal: boolean;
+  activeTerminal: number;
+  currentPath: string[];
+  selectedGroup: string | null;
+  isPanelView: boolean;
+}
 
 // Grid system constants
 const GRID = {
@@ -265,14 +276,16 @@ interface SceneProps {
   onSelectTerminal: (index: number) => void;
   onCloseTerminal: (index: number) => void;
   onTerminalSpacingChange: (spacing: number) => void;
+  skipInitialAnimation?: boolean;
 }
 
 // Camera controller that moves camera in front of target
-function CameraController({ target, panelWidth, hasFileSelected, scrollBounds }: {
+function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, skipInitialAnimation }: {
   target: { x: number; y: number; z: number } | null;
   panelWidth: number;
   hasFileSelected: boolean;
   scrollBounds: { minY: number; maxY: number } | null;
+  skipInitialAnimation?: boolean;
 }) {
   const { camera, size, gl } = useThree();
   const controlsRef = useRef<any>(null);
@@ -280,6 +293,7 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds }:
   const animationRef = useRef<number | null>(null);
   const hasFileSelectedRef = useRef(hasFileSelected);
   const scrollBoundsRef = useRef(scrollBounds);
+  const isFirstRenderRef = useRef(true);
   hasFileSelectedRef.current = hasFileSelected;
   scrollBoundsRef.current = scrollBounds;
 
@@ -378,15 +392,22 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds }:
       cameraPos = new THREE.Vector3(0, 0, GRID.CAMERA_Z);
     }
 
+    // Skip animation on first render if requested
+    const shouldSkipAnimation = isFirstRenderRef.current && skipInitialAnimation;
+    isFirstRenderRef.current = false;
+
+    if (shouldSkipAnimation) {
+      // Set position directly without animation
+      camera.position.copy(cameraPos);
+      controlsRef.current.target.copy(targetPos);
+      controlsRef.current.update();
+      return;
+    }
+
     // Animate camera to new position
     const startPos = camera.position.clone();
     const startTarget = controlsRef.current.target.clone();
     let progress = 0;
-
-    console.log('Camera animation:', {
-      from: { pos: startPos.toArray(), target: startTarget.toArray() },
-      to: { pos: cameraPos.toArray(), target: targetPos.toArray() }
-    });
 
     const animate = () => {
       progress += 0.05;
@@ -525,7 +546,7 @@ function TerminalButton({
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange, skipInitialAnimation }: SceneProps) {
   const { camera, size } = useThree();
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
@@ -662,6 +683,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         panelWidth={20}
         hasFileSelected={selectedGroup !== null && groupNodes.some(g => g.id === selectedGroup && g.file !== null)}
         scrollBounds={scrollBounds}
+        skipInitialAnimation={skipInitialAnimation}
       />
 
       {/* Terminal panels - each positioned below the previous one */}
@@ -1002,7 +1024,18 @@ export default function App() {
     window.location.reload();
   }, []);
 
-  const [currentPath, setCurrentPath] = useState<string[]>([]);
+  // Load navigation state from localStorage
+  const savedNavState = useMemo(() => {
+    const saved = localStorage.getItem(NAV_STATE_STORAGE_KEY);
+    if (saved) {
+      try {
+        return JSON.parse(saved) as NavState;
+      } catch {}
+    }
+    return null;
+  }, []);
+
+  const [currentPath, setCurrentPath] = useState<string[]>(savedNavState?.currentPath ?? []);
   const [fileContents, setFileContents] = useState<Map<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
 
@@ -1081,13 +1114,53 @@ export default function App() {
   }, [projectPath]);
 
   const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
-  const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
-  const [isPanelView, setIsPanelView] = useState(false);
-  const [showTerminal, setShowTerminal] = useState(false);
-  const [terminals, setTerminals] = useState<string[]>(['terminal-1']);
-  const [activeTerminal, setActiveTerminal] = useState(0);
-  const terminalCounterRef = useRef(1);
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(savedNavState?.selectedGroup ?? null);
+  const [isPanelView, setIsPanelView] = useState(savedNavState?.isPanelView ?? false);
+  const [showTerminal, setShowTerminal] = useState(savedNavState?.showTerminal ?? false);
+
+  // Load terminals from localStorage
+  const [terminals, setTerminals] = useState<string[]>(() => {
+    const saved = localStorage.getItem(TERMINALS_STORAGE_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Filter out any invalid terminal IDs (must match terminal-N pattern)
+          const valid = parsed.filter((id: string) => /^terminal-\d+$/.test(id));
+          if (valid.length > 0) {
+            return valid;
+          }
+        }
+      } catch {}
+    }
+    return ['terminal-1'];
+  });
+  const [activeTerminal, setActiveTerminal] = useState(savedNavState?.activeTerminal ?? 0);
+  // Initialize counter based on highest existing terminal number
+  const terminalCounterRef = useRef(
+    terminals.reduce((max, id) => {
+      const match = id.match(/terminal-(\d+)/);
+      return match ? Math.max(max, parseInt(match[1], 10)) : max;
+    }, 0)
+  );
   const prevCameraTargetRef = useRef<{ x: number; y: number; z: number } | null>(null);
+
+  // Save terminals to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem(TERMINALS_STORAGE_KEY, JSON.stringify(terminals));
+  }, [terminals]);
+
+  // Save navigation state to localStorage whenever it changes
+  useEffect(() => {
+    const navState: NavState = {
+      showTerminal,
+      activeTerminal,
+      currentPath,
+      selectedGroup,
+      isPanelView,
+    };
+    localStorage.setItem(NAV_STATE_STORAGE_KEY, JSON.stringify(navState));
+  }, [showTerminal, activeTerminal, currentPath, selectedGroup, isPanelView]);
 
   // Terminal base position - z is set to trigger close camera view
   const TERMINAL_BASE_POSITION = { x: -80, y: 0, z: 30 };
@@ -1099,6 +1172,41 @@ export default function App() {
     y: -index * terminalSpacing,
     z: TERMINAL_BASE_POSITION.z,
   }), [terminalSpacing]);
+
+  // Set initial camera position based on saved state (after mount)
+  const initializedRef = useRef(false);
+  useEffect(() => {
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+
+    if (showTerminal) {
+      // Delay to ensure Scene has set terminalSpacing
+      const timer = setTimeout(() => {
+        // Use the base position directly since spacing might not be updated yet
+        setCameraTarget({
+          x: TERMINAL_BASE_POSITION.x,
+          y: -activeTerminal * terminalSpacing,
+          z: TERMINAL_BASE_POSITION.z,
+        });
+        // Focus the terminal
+        if (terminals[activeTerminal]) {
+          focusTerminal(terminals[activeTerminal]);
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, []); // Run once on mount
+
+  // Update camera when terminalSpacing changes (for initial load when in terminal mode)
+  const spacingInitializedRef = useRef(false);
+  useEffect(() => {
+    if (!showTerminal || spacingInitializedRef.current) return;
+    spacingInitializedRef.current = true;
+
+    // Re-position camera with correct spacing
+    setCameraTarget(getTerminalPosition(activeTerminal));
+  }, [terminalSpacing]);
+
 
   const toggleTerminal = useCallback(() => {
     setShowTerminal(prev => {
@@ -1351,6 +1459,7 @@ export default function App() {
           onSelectTerminal={handleSelectTerminal}
           onCloseTerminal={handleCloseTerminal}
           onTerminalSpacingChange={setTerminalSpacing}
+          skipInitialAnimation={savedNavState !== null}
         />
       </Canvas>
 

@@ -140,8 +140,6 @@ export function Terminal3D({
     const canvasAddon = new CanvasAddon();
     term.loadAddon(canvasAddon);
 
-    term.write('Connecting to PTY server...\r\n');
-
     // Setup texture
     const setupTexture = () => {
       const canvases = container.querySelectorAll('.xterm-screen canvas');
@@ -177,13 +175,15 @@ export function Terminal3D({
     };
     setTimeout(trySetup, 100);
 
-    // Connect WebSocket with cwd parameter
-    const wsUrlWithCwd = cwd ? `${wsUrl}?cwd=${encodeURIComponent(cwd)}` : wsUrl;
-    const ws = new WebSocket(wsUrlWithCwd);
+    // Connect WebSocket with session ID and cwd parameters
+    const params = new URLSearchParams();
+    params.set('id', id);
+    if (cwd) params.set('cwd', cwd);
+    const ws = new WebSocket(`${wsUrl}?${params.toString()}`);
 
     ws.onopen = () => {
       console.log(`[Terminal3D:${id}] WebSocket connected`);
-      term.write('\x1b[2K\rConnected!\r\n');
+      // Send resize to ensure PTY has correct dimensions
       ws.send(`\x1b[8;${rows};${cols}t`);
       setTimeout(() => {
         const textarea = container.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement;
