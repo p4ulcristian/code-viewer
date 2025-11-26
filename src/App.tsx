@@ -1,5 +1,5 @@
-import { useRef, useMemo, useState, useCallback, useEffect } from "react";
-import { Canvas, useThree, useFrame } from "@react-three/fiber";
+import { useRef, useMemo, useState, useCallback, useEffect, Suspense } from "react";
+import { Canvas, useThree, useFrame, useLoader } from "@react-three/fiber";
 import { OrbitControls, Text, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import { graphData } from "./graph-data";
@@ -13,9 +13,12 @@ const STORAGE_KEY = 'ns-visualizer-project-path';
 const TERMINALS_STORAGE_KEY = 'ns-visualizer-terminals';
 const NAV_STATE_STORAGE_KEY = 'ns-visualizer-nav-state';
 
+// View mode type
+type ViewMode = 'namespaces' | 'files' | 'terminal';
+
 // Navigation state interface
 interface NavState {
-  showTerminal: boolean;
+  viewMode: ViewMode;
   activeTerminal: number;
   currentPath: string[];
   selectedGroup: string | null;
@@ -159,15 +162,16 @@ interface GroupNodeProps {
   code: string | null; // Pre-loaded code content
   childNamespaces: string[]; // Child namespace names for non-file nodes
   onPanelClick: (panelCenter: { x: number; y: number; z: number }, panelWidth: number) => void;
+  projectPath?: string;
 }
 
-function GroupNode({ id, displayName, position, color, isSelected, onClick, file, code, childNamespaces, onPanelClick }: GroupNodeProps) {
+function GroupNode({ id, displayName, position, color, isSelected, onClick, file, code, childNamespaces, onPanelClick, projectPath }: GroupNodeProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const groupRef = useRef<THREE.Group>(null);
   const size = 2; // Same size for all
 
   // Only show code panel if this namespace has a real file
-  const hasFile = file && code;
+  const hasFile = file && projectPath;
 
   // Rotate the ball
   useFrame((state) => {
@@ -244,6 +248,131 @@ function GroupNode({ id, displayName, position, color, isSelected, onClick, file
           code={code!}
           position={position}
           onPanelClick={onPanelClick}
+          projectPath={projectPath}
+        />
+      )}
+    </group>
+  );
+}
+
+// File tree item type
+interface FileTreeItem {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+}
+
+// File node component - similar to GroupNode but for files/folders
+interface FileNodeProps {
+  item: FileTreeItem;
+  position: { x: number; y: number; z: number };
+  isSelected: boolean;
+  onClick: () => void;
+  code: string | null;
+  childItems: FileTreeItem[];
+  onPanelClick: (panelCenter: { x: number; y: number; z: number }, panelWidth: number) => void;
+  projectPath?: string;
+}
+
+function FileNode({ item, position, isSelected, onClick, code, childItems, onPanelClick, projectPath }: FileNodeProps) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const groupRef = useRef<THREE.Group>(null);
+  const size = 2;
+
+  // Color based on type: folder = blue, file = green
+  const color = item.isDirectory ? "#3b82f6" : "#22c55e";
+
+  // Rotate the shape
+  useFrame((state) => {
+    if (meshRef.current) {
+      meshRef.current.rotation.y += 0.005;
+      meshRef.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.5) * 0.1;
+    }
+  });
+
+  // Get file extension for display
+  const extension = !item.isDirectory ? item.name.split('.').pop() || '' : '';
+
+  return (
+    <group ref={groupRef} position={[position.x, position.y, position.z]}>
+      <mesh ref={meshRef} onClick={onClick}>
+        {item.isDirectory ? (
+          <boxGeometry args={[size * 1.5, size, size]} />
+        ) : (
+          <dodecahedronGeometry args={[size, 0]} />
+        )}
+        <meshStandardMaterial
+          color={isSelected ? "#fbbf24" : color}
+          emissive={isSelected ? "#fbbf24" : color}
+          emissiveIntensity={isSelected ? 0.5 : 0.15}
+          metalness={isSelected ? 0.6 : 0.3}
+          roughness={isSelected ? 0.2 : 0.4}
+        />
+      </mesh>
+      {isSelected && (
+        <pointLight position={[0, 0, 2]} intensity={2} distance={10} color="#fbbf24" />
+      )}
+      <Text
+        position={[0, size + 1.5, 0]}
+        fontSize={2}
+        color="white"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.1}
+        outlineColor="#000000"
+      >
+        {item.name}
+      </Text>
+      {!item.isDirectory && extension && (
+        <Text
+          position={[0, size + 3.5, 0]}
+          fontSize={1.2}
+          color="#94a3b8"
+          anchorX="center"
+          anchorY="middle"
+        >
+          .{extension}
+        </Text>
+      )}
+
+      {/* Show child items list below folders */}
+      {item.isDirectory && childItems.length > 0 && (
+        <group position={[0, -size - 2, 0]}>
+          {childItems.slice(0, 5).map((child, idx) => (
+            <Text
+              key={child.path}
+              position={[0, -idx * 1.8, 0]}
+              fontSize={1.2}
+              color="#94a3b8"
+              anchorX="center"
+              anchorY="middle"
+            >
+              {child.isDirectory ? `📁 ${child.name}` : child.name}
+            </Text>
+          ))}
+          {childItems.length > 5 && (
+            <Text
+              position={[0, -5 * 1.8, 0]}
+              fontSize={1.2}
+              color="#64748b"
+              anchorX="center"
+              anchorY="middle"
+            >
+              +{childItems.length - 5} more
+            </Text>
+          )}
+        </group>
+      )}
+
+      {/* Show code panel below files */}
+      {!item.isDirectory && projectPath && (
+        <CodePanel3D
+          nsId={item.name}
+          filePath={item.path}
+          code={code || ''}
+          position={position}
+          onPanelClick={onPanelClick}
+          projectPath={projectPath}
         />
       )}
     </group>
@@ -288,9 +417,8 @@ interface SceneProps {
   onSelectedGroupChange: (group: string | null) => void;
   isPanelView: boolean;
   onPanelViewChange: (isPanelView: boolean) => void;
-  showTerminal: boolean;
-  onOpenTerminal: () => void;
-  onCloseTerminalView: () => void;
+  viewMode: ViewMode;
+  onViewModeChange: (mode: ViewMode) => void;
   onSettingsClick: () => void;
   projectPath: string | null;
   terminals: string[]; // List of terminal IDs
@@ -300,6 +428,13 @@ interface SceneProps {
   onCloseTerminal: (index: number) => void;
   onTerminalSpacingChange: (spacing: { width: number; height: number }) => void;
   skipInitialAnimation?: boolean;
+  // Files mode props
+  filePath: string[];
+  onFileNavigate: (path: string[]) => void;
+  fileTreeItems: FileTreeItem[];
+  fileTreeCache: Map<string, FileTreeItem[]>;
+  selectedFile: string | null;
+  onSelectedFileChange: (file: string | null) => void;
 }
 
 // Camera controller that moves camera in front of target
@@ -313,7 +448,6 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, s
 }) {
   const { camera, size, gl } = useThree();
   const controlsRef = useRef<any>(null);
-  const prevTargetRef = useRef<string | null>(null);
   const animationRef = useRef<number | null>(null);
   const hasFileSelectedRef = useRef(hasFileSelected);
   const scrollBoundsRef = useRef(scrollBounds);
@@ -383,11 +517,6 @@ function CameraController({ target, panelWidth, hasFileSelected, scrollBounds, s
 
   useEffect(() => {
     if (!controlsRef.current) return;
-
-    // Serialize target to compare - only animate if target actually changed
-    const targetKey = target ? `${target.x},${target.y},${target.z}` : null;
-    if (targetKey === prevTargetRef.current) return;
-    prevTargetRef.current = targetKey;
 
     // Cancel any ongoing animation
     if (animationRef.current) {
@@ -660,7 +789,7 @@ function TerminalButtonsHUD({
   );
 }
 
-function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, showTerminal, onOpenTerminal, onCloseTerminalView, onSettingsClick, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange, skipInitialAnimation }: SceneProps) {
+function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTargetChange, selectedGroup, onSelectedGroupChange, isPanelView, onPanelViewChange, viewMode, onViewModeChange, onSettingsClick, projectPath, terminals, activeTerminal, onAddTerminal, onSelectTerminal, onCloseTerminal, onTerminalSpacingChange, skipInitialAnimation, filePath, onFileNavigate, fileTreeItems, fileTreeCache, selectedFile, onSelectedFileChange }: SceneProps) {
   const { camera, size } = useThree();
   const depth = currentPath.length + 1;
   const prefix = currentPath.join(".");
@@ -814,23 +943,62 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
       <pointLight position={[-50, -50, -50]} intensity={0.4} />
 
 
-      <group>
-        {groupNodes.map((group) => (
-          <GroupNode
-            key={group.id}
-            id={group.id}
-            displayName={group.displayName}
-            position={group.position}
-            color={group.color}
-            isSelected={selectedGroup === group.id}
-            onClick={() => handleClick(group.id, group.position, group.file !== null)}
-            file={group.file}
-            code={group.file ? fileContents.get(group.file) || null : null}
-            childNamespaces={group.childNamespaces}
-            onPanelClick={handlePanelClick}
-          />
-        ))}
-      </group>
+      {/* Namespaces view */}
+      {viewMode === 'namespaces' && (
+        <group>
+          {groupNodes.map((group) => (
+            <GroupNode
+              key={group.id}
+              id={group.id}
+              displayName={group.displayName}
+              position={group.position}
+              color={group.color}
+              isSelected={selectedGroup === group.id}
+              onClick={() => handleClick(group.id, group.position, group.file !== null)}
+              file={group.file}
+              code={group.file ? fileContents.get(group.file) || null : null}
+              childNamespaces={group.childNamespaces}
+              onPanelClick={handlePanelClick}
+              projectPath={projectPath ?? undefined}
+            />
+          ))}
+        </group>
+      )}
+
+      {/* Files view */}
+      {viewMode === 'files' && (
+        <group>
+          {fileTreeItems.map((item, idx) => {
+            const position = gridPosition(idx);
+            const childItems = item.isDirectory ? (fileTreeCache.get(item.path) || []) : [];
+            return (
+              <FileNode
+                key={item.path}
+                item={item}
+                position={position}
+                isSelected={selectedFile === item.path}
+                onClick={() => {
+                  if (item.isDirectory) {
+                    // Navigate into folder
+                    onCameraTargetChange({ x: 0, y: 0, z: 0 });
+                    onFileNavigate([...filePath, item.name]);
+                    onSelectedFileChange(null);
+                  } else {
+                    // Select file
+                    onCameraTargetChange(position);
+                    onSelectedFileChange(selectedFile === item.path ? null : item.path);
+                  }
+                  onPanelViewChange(false);
+                }}
+                code={!item.isDirectory ? fileContents.get(item.path) || null : null}
+                childItems={childItems}
+                onPanelClick={handlePanelClick}
+                projectPath={projectPath ?? undefined}
+              />
+            );
+          })}
+        </group>
+      )}
 
       <CameraController
         target={cameraTarget}
@@ -838,28 +1006,27 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
         hasFileSelected={selectedGroup !== null && groupNodes.some(g => g.id === selectedGroup && g.file !== null)}
         scrollBounds={scrollBounds}
         skipInitialAnimation={skipInitialAnimation}
-        terminalActive={showTerminal}
+        terminalActive={viewMode === 'terminal'}
       />
 
       {/* 3D HUD - follows camera */}
       <HUD3D
-        showTerminal={showTerminal}
-        onTerminalClick={onOpenTerminal}
-        onWorkspaceClick={onCloseTerminalView}
+        viewMode={viewMode}
+        onNamespacesClick={() => onViewModeChange('namespaces')}
+        onFilesClick={() => onViewModeChange('files')}
+        onTerminalClick={() => onViewModeChange('terminal')}
       />
 
       {/* Bottom HUD - settings and breadcrumbs */}
       <BottomHUD
-        currentPath={currentPath}
-        onNavigate={onNavigate}
+        currentPath={viewMode === 'files' ? filePath : currentPath}
+        onNavigate={viewMode === 'files' ? onFileNavigate : onNavigate}
         onSettingsClick={onSettingsClick}
       />
 
-      {/* Debug frame - follows camera to show actual viewport boundaries */}
-      {showTerminal && <DebugViewportFrame />}
 
       {/* Terminal panels - 2×N grid layout */}
-      {showTerminal && terminals.map((terminalId, index) => {
+      {viewMode === 'terminal' && terminals.map((terminalId, index) => {
         const TERMINAL_GRID_COLS = 2;
         const col = index % TERMINAL_GRID_COLS;
         const row = Math.floor(index / TERMINAL_GRID_COLS);
@@ -882,7 +1049,7 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
       })}
 
       {/* Terminal navigation buttons - vertical, sticks to left of viewport */}
-      {showTerminal && (
+      {viewMode === 'terminal' && (
         <TerminalButtonsHUD
           terminals={terminals}
           activeTerminal={activeTerminal}
@@ -895,225 +1062,83 @@ function Scene({ currentPath, onNavigate, fileContents, cameraTarget, onCameraTa
   );
 }
 
-// Syntax highlighting colors for canvas rendering
-const syntaxColors: Record<string, string> = {
-  keyword: "#c586c0",
-  string: "#ce9178",
-  comment: "#6a9955",
-  number: "#b5cea8",
-  function: "#dcdcaa",
-  variable: "#9cdcfe",
-  operator: "#d4d4d4",
-  punctuation: "#d4d4d4",
-  default: "#d4d4d4",
-};
+// Inner component that loads texture using useLoader
+function CodePanelInner({
+  url,
+  position,
+  onPanelClick,
+}: {
+  url: string;
+  position: { x: number; y: number; z: number };
+  onPanelClick: (panelCenter: { x: number; y: number; z: number }, panelWidth: number) => void;
+}) {
+  // useLoader properly suspends and loads the texture
+  const texture = useLoader(THREE.TextureLoader, url);
 
-// Simple Clojure tokenizer
-function tokenizeClojure(code: string): Array<{ text: string; type: string }> {
-  const tokens: Array<{ text: string; type: string }> = [];
-  const keywords = new Set([
-    "ns", "def", "defn", "defn-", "defmacro", "let", "fn", "if", "when", "cond",
-    "case", "do", "loop", "recur", "for", "doseq", "dotimes", "while",
-    "try", "catch", "finally", "throw", "require", "import", "use",
-    "true", "false", "nil", "and", "or", "not"
-  ]);
-
-  let i = 0;
-  while (i < code.length) {
-    // Whitespace
-    if (/\s/.test(code[i])) {
-      let ws = "";
-      while (i < code.length && /\s/.test(code[i])) {
-        ws += code[i++];
-      }
-      tokens.push({ text: ws, type: "default" });
-      continue;
+  // Configure texture properties
+  useEffect(() => {
+    if (texture) {
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
     }
+  }, [texture]);
 
-    // Comment
-    if (code[i] === ";") {
-      let comment = "";
-      while (i < code.length && code[i] !== "\n") {
-        comment += code[i++];
-      }
-      tokens.push({ text: comment, type: "comment" });
-      continue;
-    }
+  const baseWidth = 20;
+  const planeWidth = baseWidth;
+  const planeHeight = texture.image ? (texture.image.height / texture.image.width) * planeWidth : 10;
+  const yOffset = -5 - planeHeight / 2;
 
-    // String
-    if (code[i] === '"') {
-      let str = code[i++];
-      while (i < code.length && code[i] !== '"') {
-        if (code[i] === "\\") str += code[i++];
-        if (i < code.length) str += code[i++];
-      }
-      if (i < code.length) str += code[i++];
-      tokens.push({ text: str, type: "string" });
-      continue;
-    }
+  const handleClick = (e: any) => {
+    e.stopPropagation();
+    onPanelClick({ x: position.x, y: yOffset, z: position.z }, planeWidth);
+  };
 
-    // Number
-    if (/[0-9]/.test(code[i]) || (code[i] === "-" && /[0-9]/.test(code[i + 1] || ""))) {
-      let num = "";
-      if (code[i] === "-") num += code[i++];
-      while (i < code.length && /[0-9.]/.test(code[i])) {
-        num += code[i++];
-      }
-      tokens.push({ text: num, type: "number" });
-      continue;
-    }
-
-    // Punctuation
-    if ("()[]{}".includes(code[i])) {
-      tokens.push({ text: code[i++], type: "punctuation" });
-      continue;
-    }
-
-    // Keyword (Clojure keywords like :foo)
-    if (code[i] === ":") {
-      let kw = code[i++];
-      while (i < code.length && /[a-zA-Z0-9_\-?!]/.test(code[i])) {
-        kw += code[i++];
-      }
-      tokens.push({ text: kw, type: "keyword" });
-      continue;
-    }
-
-    // Symbol/identifier
-    if (/[a-zA-Z_\-+*/<>=!?]/.test(code[i])) {
-      let sym = "";
-      while (i < code.length && /[a-zA-Z0-9_\-+*/<>=!?.:]/.test(code[i])) {
-        sym += code[i++];
-      }
-      const type = keywords.has(sym) ? "keyword" : "variable";
-      tokens.push({ text: sym, type });
-      continue;
-    }
-
-    // Other
-    tokens.push({ text: code[i++], type: "default" });
-  }
-
-  return tokens;
+  return (
+    <mesh position={[0, yOffset, 0]} onClick={handleClick}>
+      <planeGeometry key={`${planeWidth}-${planeHeight}`} args={[planeWidth, planeHeight]} />
+      <meshBasicMaterial map={texture} side={THREE.DoubleSide} toneMapped={false} />
+    </mesh>
+  );
 }
 
-// 3D Code panel with canvas texture
+// Loading placeholder for code panel
+function CodePanelLoading() {
+  return (
+    <mesh position={[0, -10, 0]}>
+      <planeGeometry args={[20, 10]} />
+      <meshBasicMaterial color="#2a2a4e" side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+
+// 3D Code panel with backend-rendered texture (shiki syntax highlighting)
 function CodePanel3D({
   nsId,
   filePath,
   code,
   position,
   onPanelClick,
+  projectPath,
 }: {
   nsId: string;
   filePath: string;
   code: string;
   position: { x: number; y: number; z: number };
   onPanelClick: (panelCenter: { x: number; y: number; z: number }, panelWidth: number) => void;
+  projectPath?: string;
 }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
+  if (!projectPath || !filePath) {
+    return null;
+  }
 
-  // High DPI canvas for sharp text
-  const scale = 3;
-  const fontSize = 14 * scale;
-  const lineHeight = 18 * scale;
-  const padding = 20 * scale;
-  const headerHeight = 36 * scale;
-
-  const lines = code.split("\n");
-
-  // Fixed canvas width for consistent font size across all files
-  const canvasWidth = 1200 * scale;
-  const canvasHeight = headerHeight + padding * 2 + lines.length * lineHeight;
-
-  // Render code to canvas
-  useEffect(() => {
-    const canvas = document.createElement("canvas");
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
-    const ctx = canvas.getContext("2d")!;
-
-    // Background
-    ctx.fillStyle = "#1e1e1e";
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-    // Header bar
-    ctx.fillStyle = "#2d2d2d";
-    ctx.fillRect(0, 0, canvasWidth, headerHeight);
-    ctx.strokeStyle = "#404040";
-    ctx.lineWidth = scale;
-    ctx.beginPath();
-    ctx.moveTo(0, headerHeight);
-    ctx.lineTo(canvasWidth, headerHeight);
-    ctx.stroke();
-
-    // Header text
-    ctx.font = `bold ${13 * scale}px monospace`;
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(nsId, padding, headerHeight * 0.65);
-
-    // Border
-    ctx.strokeStyle = "#404040";
-    ctx.lineWidth = 2 * scale;
-    ctx.strokeRect(0, 0, canvasWidth, canvasHeight);
-
-    // Render code lines
-    ctx.font = `${fontSize}px monospace`;
-    let y = headerHeight + padding;
-
-    lines.forEach((line, lineNum) => {
-      // Line number
-      ctx.fillStyle = "#606060";
-      ctx.fillText(String(lineNum + 1).padStart(3), padding, y);
-
-      // Tokenize and render line with syntax highlighting
-      const tokens = tokenizeClojure(line);
-      let x = padding + 50 * scale;
-
-      tokens.forEach((token) => {
-        ctx.fillStyle = syntaxColors[token.type] || syntaxColors.default;
-        ctx.fillText(token.text, x, y);
-        x += ctx.measureText(token.text).width;
-      });
-
-      y += lineHeight;
-    });
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.needsUpdate = true;
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    setTexture(tex);
-
-    return () => tex.dispose();
-  }, [code, nsId, lines.length, canvasWidth, canvasHeight, fontSize, lineHeight, padding, headerHeight, scale]);
-
-  // Scale the 3D plane based on canvas size
-  const baseWidth = 20;
-  const planeWidth = baseWidth;
-  const planeHeight = (canvasHeight / canvasWidth) * planeWidth;
-
-  // Position below the sphere, offset by half the height so top is at y=-5
-  const yOffset = -5 - planeHeight / 2;
-
-  const handleClick = (e: any) => {
-    e.stopPropagation();
-    // Calculate world position of panel center
-    onPanelClick({ x: position.x, y: yOffset, z: position.z }, planeWidth);
-  };
+  const url = `/api/file-preview?project=${encodeURIComponent(projectPath)}&path=${encodeURIComponent(filePath)}&lines=80`;
 
   return (
-    <mesh
-      ref={meshRef}
-      position={[0, yOffset, 0]}
-      onClick={handleClick}
-    >
-      <planeGeometry args={[planeWidth, planeHeight]} />
-      {texture && (
-        <meshBasicMaterial map={texture} side={THREE.DoubleSide} />
-      )}
-    </mesh>
+    <Suspense fallback={<CodePanelLoading />}>
+      <CodePanelInner url={url} position={position} onPanelClick={onPanelClick} />
+    </Suspense>
   );
 }
 
@@ -1234,7 +1259,73 @@ export default function App() {
   const [cameraTarget, setCameraTarget] = useState<{ x: number; y: number; z: number } | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(savedNavState?.selectedGroup ?? null);
   const [isPanelView, setIsPanelView] = useState(savedNavState?.isPanelView ?? false);
-  const [showTerminal, setShowTerminal] = useState(savedNavState?.showTerminal ?? false);
+  const [viewMode, setViewMode] = useState<ViewMode>(savedNavState?.viewMode ?? 'namespaces');
+
+  // File tree state
+  const [filePath, setFilePath] = useState<string[]>([]);
+  const [fileTreeItems, setFileTreeItems] = useState<FileTreeItem[]>([]);
+  const [fileTreeCache, setFileTreeCache] = useState<Map<string, FileTreeItem[]>>(new Map());
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+
+  // Load file tree when path or viewMode changes
+  useEffect(() => {
+    if (viewMode !== 'files' || !projectPath) return;
+
+    const loadFileTree = async () => {
+      const pathStr = filePath.join('/');
+      try {
+        const response = await fetch(`/api/file-tree?project=${encodeURIComponent(projectPath)}&path=${encodeURIComponent(pathStr)}`);
+        const data = await response.json();
+        if (data.items) {
+          setFileTreeItems(data.items);
+
+          // Prefetch child directories for folder previews
+          const folders = data.items.filter((item: FileTreeItem) => item.isDirectory);
+          const newCache = new Map(fileTreeCache);
+
+          await Promise.all(folders.map(async (folder: FileTreeItem) => {
+            if (!newCache.has(folder.path)) {
+              try {
+                const childResponse = await fetch(`/api/file-tree?project=${encodeURIComponent(projectPath)}&path=${encodeURIComponent(folder.path)}`);
+                const childData = await childResponse.json();
+                if (childData.items) {
+                  newCache.set(folder.path, childData.items);
+                }
+              } catch {}
+            }
+          }));
+
+          setFileTreeCache(newCache);
+        }
+      } catch (e) {
+        console.error('Failed to load file tree:', e);
+      }
+    };
+
+    loadFileTree();
+  }, [viewMode, projectPath, filePath]);
+
+  // Load file content when a file is selected
+  useEffect(() => {
+    if (!selectedFile || !projectPath) return;
+
+    const loadFileContent = async () => {
+      // Check if already loaded
+      if (fileContents.has(selectedFile)) return;
+
+      try {
+        const response = await fetch(`/api/file?project=${encodeURIComponent(projectPath)}&path=${encodeURIComponent(selectedFile)}`);
+        if (response.ok) {
+          const content = await response.text();
+          setFileContents(prev => new Map(prev).set(selectedFile, content));
+        }
+      } catch (e) {
+        console.error('Failed to load file:', e);
+      }
+    };
+
+    loadFileContent();
+  }, [selectedFile, projectPath]);
 
   // Load terminals from localStorage
   const [terminals, setTerminals] = useState<string[]>(() => {
@@ -1271,14 +1362,14 @@ export default function App() {
   // Save navigation state to localStorage whenever it changes
   useEffect(() => {
     const navState: NavState = {
-      showTerminal,
+      viewMode,
       activeTerminal,
       currentPath,
       selectedGroup,
       isPanelView,
     };
     localStorage.setItem(NAV_STATE_STORAGE_KEY, JSON.stringify(navState));
-  }, [showTerminal, activeTerminal, currentPath, selectedGroup, isPanelView]);
+  }, [viewMode, activeTerminal, currentPath, selectedGroup, isPanelView]);
 
   // Terminal grid layout - 2 columns
   const TERMINAL_GRID_COLS = 2;
@@ -1302,7 +1393,7 @@ export default function App() {
     if (initializedRef.current) return;
     initializedRef.current = true;
 
-    if (showTerminal) {
+    if (viewMode === 'terminal') {
       // Delay to ensure Scene has set terminalSpacing
       const timer = setTimeout(() => {
         // Use the grid position
@@ -1319,7 +1410,7 @@ export default function App() {
   // Update camera when terminalSpacing changes (for initial load when in terminal mode)
   const spacingInitializedRef = useRef(false);
   useEffect(() => {
-    if (!showTerminal || spacingInitializedRef.current) return;
+    if (viewMode !== 'terminal' || spacingInitializedRef.current) return;
     spacingInitializedRef.current = true;
 
     // Re-position camera with correct spacing
@@ -1327,28 +1418,28 @@ export default function App() {
   }, [terminalSpacing]);
 
 
-  const openTerminal = useCallback(() => {
-    if (showTerminal) return; // Already open
-    // Save current camera and focus on active terminal
-    prevCameraTargetRef.current = cameraTarget;
-    setCameraTarget(getTerminalGridPosition(activeTerminal));
-    setShowTerminal(true);
-  }, [showTerminal, cameraTarget, activeTerminal, getTerminalGridPosition]);
+  const handleViewModeChange = useCallback((newMode: ViewMode) => {
+    if (newMode === viewMode) return; // Already in this mode
 
-  const closeTerminalView = useCallback(() => {
-    if (!showTerminal) return; // Already closed
-    // Restore previous camera
-    setCameraTarget(prevCameraTargetRef.current);
-    setShowTerminal(false);
-  }, [showTerminal]);
+    if (newMode === 'terminal') {
+      // Switching to terminal - save current camera and focus on active terminal
+      prevCameraTargetRef.current = cameraTarget;
+      setCameraTarget(getTerminalGridPosition(activeTerminal));
+    } else if (viewMode === 'terminal') {
+      // Switching away from terminal - restore previous camera
+      setCameraTarget(prevCameraTargetRef.current);
+    }
+
+    setViewMode(newMode);
+  }, [viewMode, cameraTarget, activeTerminal, getTerminalGridPosition]);
 
   const toggleTerminal = useCallback(() => {
-    if (showTerminal) {
-      closeTerminalView();
+    if (viewMode === 'terminal') {
+      handleViewModeChange('namespaces');
     } else {
-      openTerminal();
+      handleViewModeChange('terminal');
     }
-  }, [showTerminal, openTerminal, closeTerminalView]);
+  }, [viewMode, handleViewModeChange]);
 
   const handleAddTerminal = useCallback(() => {
     terminalCounterRef.current += 1;
@@ -1397,6 +1488,15 @@ export default function App() {
     setIsPanelView(panelView);
   }, []);
 
+  const handleFileNavigate = useCallback((path: string[]) => {
+    setFilePath(path);
+    setSelectedFile(null);
+  }, []);
+
+  const handleSelectedFileChange = useCallback((file: string | null) => {
+    setSelectedFile(file);
+  }, []);
+
   // Get visible child namespaces with their positions for left/right navigation
   const getVisibleNamespacesWithPositions = useCallback(() => {
     const depth = currentPath.length + 1;
@@ -1421,11 +1521,14 @@ export default function App() {
   }, [currentPath]);
 
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [fileSelectedIndex, setFileSelectedIndex] = useState(0);
   // Stack to remember selection index at each navigation level
   const selectionStackRef = useRef<number[]>([]);
+  const fileSelectionStackRef = useRef<number[]>([]);
 
-  // Select first node when path changes (or restore previous selection when going back)
+  // Select first node when path changes (or restore previous selection when going back) - Namespaces
   useEffect(() => {
+    if (viewMode !== 'namespaces') return;
     const visibleNodes = getVisibleNamespacesWithPositions();
     if (visibleNodes.length > 0) {
       // Check if we have a stored selection for this level (means we're going back)
@@ -1442,7 +1545,29 @@ export default function App() {
         setSelectedGroup(visibleNodes[0].id);
       }
     }
-  }, [currentPath, getVisibleNamespacesWithPositions]);
+  }, [currentPath, getVisibleNamespacesWithPositions, viewMode]);
+
+  // Select first item when file path changes (or restore previous selection when going back) - Files
+  useEffect(() => {
+    if (viewMode !== 'files') return;
+    if (fileTreeItems.length > 0) {
+      // Check if we have a stored selection for this level (means we're going back)
+      const storedIndex = fileSelectionStackRef.current[filePath.length];
+      if (storedIndex !== undefined && storedIndex < fileTreeItems.length) {
+        setFileSelectedIndex(storedIndex);
+        setSelectedFile(fileTreeItems[storedIndex].path);
+        // Move camera to the restored selection
+        setCameraTarget(gridPosition(storedIndex));
+        // Clear any stored indices beyond current level
+        fileSelectionStackRef.current = fileSelectionStackRef.current.slice(0, filePath.length);
+      } else {
+        setFileSelectedIndex(0);
+        if (fileTreeItems[0]) {
+          setSelectedFile(fileTreeItems[0].path);
+        }
+      }
+    }
+  }, [filePath, fileTreeItems, viewMode]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -1456,7 +1581,7 @@ export default function App() {
 
       // When terminal is shown, only handle Escape to close it
       // Let all other keys go to the terminal
-      if (showTerminal) {
+      if (viewMode === 'terminal') {
         if (e.key === "Escape") {
           e.preventDefault();
           toggleTerminal();
@@ -1466,11 +1591,19 @@ export default function App() {
 
       if (e.key === "Escape") {
         // Go back one level - selection will be restored from stack by useEffect
-        if (currentPath.length > 0) {
-          setCurrentPath(currentPath.slice(0, -1));
+        if (viewMode === 'files') {
+          if (filePath.length > 0) {
+            setFilePath(filePath.slice(0, -1));
+          }
+          setCameraTarget(null);
+          setSelectedFile(null);
+        } else {
+          if (currentPath.length > 0) {
+            setCurrentPath(currentPath.slice(0, -1));
+          }
+          setCameraTarget(null);
+          setSelectedGroup(null);
         }
-        setCameraTarget(null);
-        setSelectedGroup(null);
         // Don't reset selectedIndex here - useEffect will restore from stack
       } else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         // In panel view, scroll up/down
@@ -1481,62 +1614,108 @@ export default function App() {
           setCameraTarget({ ...cameraTarget, y: newY });
         }
       } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        const visibleNodes = getVisibleNamespacesWithPositions();
-        if (visibleNodes.length === 0) return;
+        if (viewMode === 'files') {
+          // Files view navigation
+          if (fileTreeItems.length === 0) return;
 
-        let newIndex: number;
-        if (e.key === "ArrowLeft") {
-          newIndex = (selectedIndex - 1 + visibleNodes.length) % visibleNodes.length;
+          let newIndex: number;
+          if (e.key === "ArrowLeft") {
+            newIndex = (fileSelectedIndex - 1 + fileTreeItems.length) % fileTreeItems.length;
+          } else {
+            newIndex = (fileSelectedIndex + 1) % fileTreeItems.length;
+          }
+
+          setFileSelectedIndex(newIndex);
+
+          const item = fileTreeItems[newIndex];
+          const position = gridPosition(newIndex);
+          setSelectedFile(item.path);
+
+          if (isPanelView && !item.isDirectory) {
+            const panelY = -5 - 10;
+            setCameraTarget({ x: position.x, y: panelY, z: position.z });
+          } else {
+            setCameraTarget(position);
+          }
         } else {
-          newIndex = (selectedIndex + 1) % visibleNodes.length;
-        }
-
-        setSelectedIndex(newIndex);
-
-        // Set camera target to the selected node's position and select the node
-        const node = visibleNodes[newIndex];
-        console.log('Arrow key navigation:', { newIndex, nodeId: node.id, position: node.position });
-        setSelectedGroup(node.id);
-
-        // If in panel view, go to the new node's panel, otherwise go to node position
-        if (isPanelView) {
-          const panelY = -5 - 10; // Approximate panel center
-          setCameraTarget({ x: node.position.x, y: panelY, z: node.position.z });
-        } else {
-          setCameraTarget(node.position);
-        }
-      } else if (e.key === " " && selectedGroup) {
-        e.preventDefault();
-        // Check if selected namespace has children (not a file)
-        const depth = currentPath.length + 1;
-        const childGroups = getChildNamespaces(selectedGroup, depth + 1);
-        const hasChildren = childGroups.size > 1 ||
-          (childGroups.size === 1 && !childGroups.has(selectedGroup));
-
-        if (hasChildren) {
-          // Space = enter the selected namespace (only if not a file)
-          // Save current selection index before navigating
-          selectionStackRef.current[currentPath.length] = selectedIndex;
-          const lastPart = selectedGroup.split(".").pop()!;
-          setCurrentPath([...currentPath, lastPart]);
-          setSelectedGroup(null);
-          setSelectedIndex(0);
-          setCameraTarget({ x: 0, y: 0, z: 0 }); // Reset camera to origin
-          setIsPanelView(false);
-        } else {
-          // It's a file - toggle panel view
+          // Namespaces view navigation
           const visibleNodes = getVisibleNamespacesWithPositions();
-          const node = visibleNodes.find(n => n.id === selectedGroup);
-          if (node) {
+          if (visibleNodes.length === 0) return;
+
+          let newIndex: number;
+          if (e.key === "ArrowLeft") {
+            newIndex = (selectedIndex - 1 + visibleNodes.length) % visibleNodes.length;
+          } else {
+            newIndex = (selectedIndex + 1) % visibleNodes.length;
+          }
+
+          setSelectedIndex(newIndex);
+
+          const node = visibleNodes[newIndex];
+          setSelectedGroup(node.id);
+
+          if (isPanelView) {
+            const panelY = -5 - 10;
+            setCameraTarget({ x: node.position.x, y: panelY, z: node.position.z });
+          } else {
+            setCameraTarget(node.position);
+          }
+        }
+      } else if (e.key === " ") {
+        e.preventDefault();
+
+        if (viewMode === 'files') {
+          // Files view - space to enter folder or toggle panel
+          const item = fileTreeItems[fileSelectedIndex];
+          if (!item) return;
+
+          if (item.isDirectory) {
+            // Enter folder
+            fileSelectionStackRef.current[filePath.length] = fileSelectedIndex;
+            setFilePath([...filePath, item.name]);
+            setSelectedFile(null);
+            setFileSelectedIndex(0);
+            setCameraTarget({ x: 0, y: 0, z: 0 });
+            setIsPanelView(false);
+          } else {
+            // Toggle panel view for file
+            const position = gridPosition(fileSelectedIndex);
             if (isPanelView) {
-              // Go back to node position
-              setCameraTarget(node.position);
+              setCameraTarget(position);
               setIsPanelView(false);
             } else {
-              // Go to panel view (below the node)
-              const panelY = -5 - 10; // Approximate panel center
-              setCameraTarget({ x: node.position.x, y: panelY, z: node.position.z });
+              const panelY = -5 - 10;
+              setCameraTarget({ x: position.x, y: panelY, z: position.z });
               setIsPanelView(true);
+            }
+          }
+        } else if (selectedGroup) {
+          // Namespaces view
+          const depth = currentPath.length + 1;
+          const childGroups = getChildNamespaces(selectedGroup, depth + 1);
+          const hasChildren = childGroups.size > 1 ||
+            (childGroups.size === 1 && !childGroups.has(selectedGroup));
+
+          if (hasChildren) {
+            selectionStackRef.current[currentPath.length] = selectedIndex;
+            const lastPart = selectedGroup.split(".").pop()!;
+            setCurrentPath([...currentPath, lastPart]);
+            setSelectedGroup(null);
+            setSelectedIndex(0);
+            setCameraTarget({ x: 0, y: 0, z: 0 });
+            setIsPanelView(false);
+          } else {
+            const visibleNodes = getVisibleNamespacesWithPositions();
+            const node = visibleNodes.find(n => n.id === selectedGroup);
+            if (node) {
+              if (isPanelView) {
+                setCameraTarget(node.position);
+                setIsPanelView(false);
+              } else {
+                const panelY = -5 - 10;
+                setCameraTarget({ x: node.position.x, y: panelY, z: node.position.z });
+                setIsPanelView(true);
+              }
             }
           }
         }
@@ -1545,7 +1724,7 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup, isPanelView, toggleTerminal, showTerminal]);
+  }, [currentPath, getVisibleNamespacesWithPositions, selectedIndex, selectedGroup, isPanelView, toggleTerminal, viewMode, filePath, fileTreeItems, fileSelectedIndex]);
 
   return (
     <div
@@ -1579,9 +1758,8 @@ export default function App() {
           onSelectedGroupChange={handleSelectedGroupChange}
           isPanelView={isPanelView}
           onPanelViewChange={handlePanelViewChange}
-          showTerminal={showTerminal}
-          onOpenTerminal={openTerminal}
-          onCloseTerminalView={closeTerminalView}
+          viewMode={viewMode}
+          onViewModeChange={handleViewModeChange}
           onSettingsClick={() => setShowProjectSetup(true)}
           projectPath={projectPath}
           terminals={terminals}
@@ -1591,6 +1769,12 @@ export default function App() {
           onCloseTerminal={handleCloseTerminal}
           onTerminalSpacingChange={setTerminalSpacing}
           skipInitialAnimation={savedNavState !== null}
+          filePath={filePath}
+          onFileNavigate={handleFileNavigate}
+          fileTreeItems={fileTreeItems}
+          fileTreeCache={fileTreeCache}
+          selectedFile={selectedFile}
+          onSelectedFileChange={handleSelectedFileChange}
         />
       </Canvas>
 

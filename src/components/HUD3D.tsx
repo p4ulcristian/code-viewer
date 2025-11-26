@@ -3,16 +3,20 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { HUDButton } from './HUDButton';
 
+type ViewMode = 'namespaces' | 'files' | 'terminal';
+
 interface HUD3DProps {
-  showTerminal: boolean;
+  viewMode: ViewMode;
+  onNamespacesClick: () => void;
+  onFilesClick: () => void;
   onTerminalClick: () => void;
-  onWorkspaceClick: () => void;
 }
 
 export function HUD3D({
-  showTerminal,
+  viewMode,
+  onNamespacesClick,
+  onFilesClick,
   onTerminalClick,
-  onWorkspaceClick,
 }: HUD3DProps) {
   const groupRef = useRef<THREE.Group>(null);
   const { camera, size } = useThree();
@@ -50,28 +54,54 @@ export function HUD3D({
     groupRef.current.quaternion.copy(camera.quaternion);
   });
 
+  const buttonHeight = 0.35;
+  const buttonGap = 0.08;
+
+  // Calculate button positions (left to right: Namespaces, Files, Terminal)
+  const nsWidth = 0.75;
+  const filesWidth = 0.5;
+  const termWidth = 0.6;
+
+  const totalWidth = nsWidth + filesWidth + termWidth + buttonGap * 2;
+  const startX = -totalWidth / 2;
+
+  const nsX = startX + nsWidth / 2;
+  const filesX = startX + nsWidth + buttonGap + filesWidth / 2;
+  const termX = startX + nsWidth + buttonGap + filesWidth + buttonGap + termWidth / 2;
+
   return (
     <group ref={groupRef}>
-      {/* Workspace Button - positioned left of center */}
+      {/* Namespaces Button */}
       <HUDButton
-        position={[-0.4, 0, 0]}
-        onClick={onWorkspaceClick}
-        isActive={!showTerminal}
-        label="Workspace"
-        width={0.7}
-        height={0.35}
-        fontSize={0.11}
+        position={[nsX, 0, 0]}
+        onClick={onNamespacesClick}
+        isActive={viewMode === 'namespaces'}
+        label="Namespaces"
+        width={nsWidth}
+        height={buttonHeight}
+        fontSize={0.1}
       />
 
-      {/* Terminal Button - positioned right of center */}
+      {/* Files Button */}
       <HUDButton
-        position={[0.4, 0, 0]}
+        position={[filesX, 0, 0]}
+        onClick={onFilesClick}
+        isActive={viewMode === 'files'}
+        label="Files"
+        width={filesWidth}
+        height={buttonHeight}
+        fontSize={0.1}
+      />
+
+      {/* Terminal Button */}
+      <HUDButton
+        position={[termX, 0, 0]}
         onClick={onTerminalClick}
-        isActive={showTerminal}
+        isActive={viewMode === 'terminal'}
         label="Terminal"
-        width={0.6}
-        height={0.35}
-        fontSize={0.11}
+        width={termWidth}
+        height={buttonHeight}
+        fontSize={0.1}
       />
     </group>
   );

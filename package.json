@@ -23,11 +23,13 @@
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/xterm": "^5.5.0",
     "@xyflow/react": "^12.9.3",
+    "canvas": "^3.2.0",
     "dagre": "^0.8.5",
     "prism-react-renderer": "^2.4.1",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "reagraph": "^4.30.7",
+    "shiki": "^3.15.0",
     "three": "^0.181.2",
     "ws": "^8.18.0"
   },
